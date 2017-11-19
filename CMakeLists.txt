@@ -1,0 +1,16 @@
+CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
+
+PROJECT(Base)
+
+SET(CMAKE_BUILD_TYPE Release)
+
+INCLUDE_DIRECTORIES(
+  "${PROJECT_SOURCE_DIR}/dist/alure-1.2/include"
+  "${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2/include"
+)
+
+ADD_SUBDIRECTORY("${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2")
+ADD_SUBDIRECTORY("${PROJECT_SOURCE_DIR}/dist/alure-1.2")
+
+ADD_EXECUTABLE(main main.cpp)
+TARGET_LINK_LIBRARIES(main OpenAL alure-static)
