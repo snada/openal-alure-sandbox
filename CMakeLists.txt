@@ -1,16 +1,40 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
+MESSAGE(STATUS "${PROJECT_BINARY_DIR}")
+
+INCLUDE(ExternalProject)
+
+CMAKE_MINIMUM_REQUIRED(VERSION 3.0)
 
 PROJECT(Base)
 
 SET(CMAKE_BUILD_TYPE Release)
 
-INCLUDE_DIRECTORIES(
-  "${PROJECT_SOURCE_DIR}/dist/alure-1.2/include"
-  "${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2/include"
+set (CMAKE_CXX_STANDARD 11)
+
+ExternalProject_Add(
+  OpenAL
+  SOURCE_DIR "${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2"
+  BINARY_DIR "${PROJECT_BINARY_DIR}/openal"
+  BUILD_COMMAND "make"
+  UPDATE_COMMAND ""
+  INSTALL_COMMAND ""
 )
 
-ADD_SUBDIRECTORY("${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2")
-ADD_SUBDIRECTORY("${PROJECT_SOURCE_DIR}/dist/alure-1.2")
+ExternalProject_Add(
+  alure
+  DEPENDS OpenAL
+  SOURCE_DIR "${PROJECT_SOURCE_DIR}/dist/alure"
+  BINARY_DIR "${PROJECT_BINARY_DIR}/alure"
+  BUILD_COMMAND "make"
+  UPDATE_COMMAND ""
+  INSTALL_COMMAND ""
+)
+
+INCLUDE_DIRECTORIES(
+  "${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2/include"
+  "${PROJECT_SOURCE_DIR}/dist/alure/include"
+)
 
 ADD_EXECUTABLE(main main.cpp)
-TARGET_LINK_LIBRARIES(main OpenAL alure-static)
+# ADD_DEPENDENCIES(main OpenAL alure)
+
+TARGET_LINK_LIBRARIES(main openal alure2 ${LINKER_OPTS})

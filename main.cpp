@@ -1,69 +1,121 @@
-#include <stdio.h>
+/*
+ * An example showing how to enable HRTF rendering, using the ALC_SOFT_HRTF
+ * extension.
+ */
 
-#include <AL/alure.h>
+#include <algorithm>
+#include <iostream>
+#include <sstream>
+#include <iomanip>
+#include <cstring>
+#include <thread>
+#include <chrono>
 
-volatile int isdone = 0;
-static void eos_callback(void *unused, ALuint unused2)
+#include <AL/alure2.h>
+
+int main(int argc, char *argv[])
 {
-    isdone = 1;
-    (void)unused;
-    (void)unused2;
-}
+    alure::DeviceManager devMgr = alure::DeviceManager::get();
 
-int main( int argc, char **argv)
-{
-    ALuint src, buf;
-
-    if(argc < 2)
+    int fileidx = 1;
+    alure::Device dev;
+    if(argc > 3 && strcmp(argv[1], "-device") == 0)
     {
-        fprintf(stderr, "Usage %s <soundfile>\n", argv[0]);
-        return 1;
+        fileidx = 3;
+        dev = devMgr.openPlayback(argv[2], std::nothrow);
+        if(!dev)
+            std::cerr<< "Failed to open \""<<argv[2]<<"\" - trying default" <<std::endl;
+    }
+    if(!dev)
+        dev = devMgr.openPlayback();
+    std::cout<< "Opened \""<<dev.getName()<<"\"" <<std::endl;
+
+    // Enumerate (and display) the available HRTFs
+    alure::Vector<alure::String> hrtf_names = dev.enumerateHRTFNames();
+    if(hrtf_names.empty())
+        std::cout<< "No HRTFs found!\n";
+    else
+    {
+        std::cout<< "Available HRTFs:\n";
+        for(const alure::String &name : hrtf_names)
+            std::cout<< "    "<<name <<'\n';
+    }
+    std::cout.flush();
+
+    alure::Vector<alure::AttributePair> attrs;
+    attrs.push_back({ALC_HRTF_SOFT, ALC_TRUE});
+    if(argc-fileidx > 1 && alure::StringView("-hrtf") == argv[fileidx])
+    {
+        // Find the given HRTF and add it to the attributes list
+        const char *hrtf_name = argv[fileidx+1];
+        fileidx += 2;
+
+        auto iter = std::find(hrtf_names.begin(), hrtf_names.end(), hrtf_name);
+        if(iter == hrtf_names.end())
+            std::cerr<< "HRTF \""<<hrtf_name<<"\" not found" <<std::endl;
+        else
+            attrs.push_back({ALC_HRTF_ID_SOFT, std::distance(hrtf_names.begin(), iter)});
+    }
+    attrs.push_back(alure::AttributesEnd());
+    alure::Context ctx = dev.createContext(attrs);
+    alure::Context::MakeCurrent(ctx);
+
+    if(dev.isHRTFEnabled())
+        std::cout<< "Using HRTF \""<<dev.getCurrentHRTF()<<"\"" <<std::endl;
+    else
+        std::cout<< "HRTF not enabled!" <<std::endl;
+
+    for(int i = fileidx;i < argc;i++)
+    {
+        if(argc-i > 1 && alure::StringView("-hrtf") == argv[i])
+        {
+            // Find the given HRTF and reset the device using it
+            auto iter = std::find(hrtf_names.begin(), hrtf_names.end(), argv[i+1]);
+            if(iter == hrtf_names.end())
+                std::cerr<< "HRTF \""<<argv[i+1]<<"\" not found" <<std::endl;
+            else
+            {
+                alure::Array<alure::AttributePair,3> attrs{{
+                    {ALC_HRTF_SOFT, ALC_TRUE},
+                    {ALC_HRTF_ID_SOFT, std::distance(hrtf_names.begin(), iter)},
+                    alure::AttributesEnd()
+                }};
+                dev.reset(attrs);
+                if(dev.isHRTFEnabled())
+                    std::cout<< "Using HRTF \""<<dev.getCurrentHRTF()<<"\"" <<std::endl;
+                else
+                    std::cout<< "HRTF not enabled!" <<std::endl;
+            }
+
+            ++i;
+            continue;
+        }
+
+        alure::SharedPtr<alure::Decoder> decoder(ctx.createDecoder(argv[i]));
+        alure::Source source = ctx.createSource();
+
+        source.play(decoder, 12000, 4);
+        std::cout<< "Playing "<<argv[i]<<" ("<<alure::GetSampleTypeName(decoder->getSampleType())<<", "
+                                             <<alure::GetChannelConfigName(decoder->getChannelConfig())<<", "
+                                             <<decoder->getFrequency()<<"hz)" <<std::endl;
+
+        float invfreq = 1.0f / decoder->getFrequency();
+        while(source.isPlaying())
+        {
+            std::cout<< "\r "<<std::fixed<<std::setprecision(2)<<
+                        source.getSecOffset().count()<<" / "<<(decoder->getLength()*invfreq);
+            std::cout.flush();
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
+            ctx.update();
+        }
+        std::cout<<std::endl;
+
+        source.release();
     }
 
-    if(!alureInitDevice(NULL, NULL))
-    {
-        fprintf(stderr, "Failed to open OpenAL device: %s\n", alureGetErrorString());
-        return 1;
-    }
+    alure::Context::MakeCurrent(nullptr);
+    ctx.destroy();
+    dev.close();
 
-    alGenSources(1, &src);
-    if(alGetError() != AL_NO_ERROR)
-    {
-        fprintf(stderr, "Failed to create OpenAL source!\n");
-        alureShutdownDevice();
-        return 1;
-    }
-
-    buf = alureCreateBufferFromFile(argv[1]);
-    if(!buf)
-    {
-        fprintf(stderr, "Could not load %s: %s\n", argv[1], alureGetErrorString());
-        alDeleteSources(1, &src);
-
-        alureShutdownDevice();
-        return 1;
-    }
-
-    alSourcei(src, AL_BUFFER, buf);
-    if(alurePlaySource(src, eos_callback, NULL) == AL_FALSE)
-    {
-        fprintf(stderr, "Failed to start source!\n");
-        alDeleteSources(1, &src);
-        alDeleteBuffers(1, &buf);
-
-        alureShutdownDevice();
-        return 1;
-    }
-
-    while(!isdone)
-    {
-        alureSleep(0.125);
-        alureUpdate();
-    }
-
-    alDeleteSources(1, &src);
-    alDeleteBuffers(1, &buf);
-
-    alureShutdownDevice();
     return 0;
 }
