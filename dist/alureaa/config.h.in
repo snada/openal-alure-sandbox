@@ -1,0 +1,14 @@
+/* Define if we have vorbisfile support */
+#cmakedefine HAVE_VORBISFILE
+
+/* Define if we have libFLAC support */
+#cmakedefine HAVE_LIBFLAC
+
+/* Define if we have opusfile support */
+#cmakedefine HAVE_OPUSFILE
+
+/* Define if we have libsndfile support */
+#cmakedefine HAVE_LIBSNDFILE
+
+/* Define if we have MPG123 support */
+#cmakedefine HAVE_MPG123

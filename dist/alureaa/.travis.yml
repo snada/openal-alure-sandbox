@@ -1,0 +1,45 @@
+language: cpp
+matrix:
+  include:
+    - os: linux
+      addons:
+        apt:
+          sources:
+            - ubuntu-toolchain-r-test
+          packages:
+            - g++-4.9
+      env:
+         - MATRIX_EVAL="CC=gcc-4.9 && CXX=g++-4.9"
+    - os: osx
+      osx_image: xcode8
+sudo: required
+before_install:
+  - >
+    if [[ x"${MATRIX_EVAL}" != x"" ]]; then
+      eval "${MATRIX_EVAL}"
+    fi
+install:
+  - >
+    if [[ "${TRAVIS_OS_NAME}" == "linux" ]]; then
+      # Install OpenAL, VorbisFile, OpusFile, FLAC, libsndfile, libmpg123,
+      # PhysicsFS, and DUMB dependencies for decoders and examples.
+      sudo apt-get install -qq \
+        libopenal-dev \
+        libvorbis-dev \
+        libopusfile-dev \
+        libflac-dev \
+        libsndfile1-dev \
+        libmpg123-dev \
+        libphysfs-dev \
+        libdumb1-dev
+    fi
+script:
+  - >
+    if [[ "${TRAVIS_OS_NAME}" == "linux" ]]; then
+      cmake .
+    fi
+  - >
+    if [[ "${TRAVIS_OS_NAME}" == "osx" ]]; then
+      cmake .
+    fi
+  - make -j2
