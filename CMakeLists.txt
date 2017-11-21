@@ -1,3 +1,4 @@
+
 MESSAGE(STATUS "${PROJECT_BINARY_DIR}")
 
 INCLUDE(ExternalProject)
@@ -8,13 +9,17 @@ PROJECT(Base)
 
 SET(CMAKE_BUILD_TYPE Release)
 
-set (CMAKE_CXX_STANDARD 11)
+SET(CMAKE_CXX_STANDARD 11)
+
+LINK_DIRECTORIES(
+  "${PROJECT_BINARY_DIR}/openal"
+  "${PROJECT_BINARY_DIR}/alure"
+)
 
 ExternalProject_Add(
   OpenAL
   SOURCE_DIR "${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2"
   BINARY_DIR "${PROJECT_BINARY_DIR}/openal"
-  BUILD_COMMAND "make"
   UPDATE_COMMAND ""
   INSTALL_COMMAND ""
 )
@@ -24,7 +29,6 @@ ExternalProject_Add(
   DEPENDS OpenAL
   SOURCE_DIR "${PROJECT_SOURCE_DIR}/dist/alure"
   BINARY_DIR "${PROJECT_BINARY_DIR}/alure"
-  BUILD_COMMAND "make"
   UPDATE_COMMAND ""
   INSTALL_COMMAND ""
 )
@@ -35,6 +39,6 @@ INCLUDE_DIRECTORIES(
 )
 
 ADD_EXECUTABLE(main main.cpp)
-# ADD_DEPENDENCIES(main OpenAL alure)
+ADD_DEPENDENCIES(main OpenAL alure)
 
-TARGET_LINK_LIBRARIES(main openal alure2 ${LINKER_OPTS})
+TARGET_LINK_LIBRARIES(main openal alure2)
