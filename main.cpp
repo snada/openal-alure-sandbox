@@ -98,10 +98,16 @@ int main(int argc, char *argv[])
         std::cout<< "Playing "<<argv[i]<<" ("<<alure::GetSampleTypeName(decoder->getSampleType())<<", "
                                              <<alure::GetChannelConfigName(decoder->getChannelConfig())<<", "
                                              <<decoder->getFrequency()<<"hz)" <<std::endl;
-
+        float initialPos = -10;
+        float xPos = 0;
+        source.setVelocity(0.1, 0, 0);
+        source.setLooping(true); //does not seem to work, need to know why
         float invfreq = 1.0f / decoder->getFrequency();
         while(source.isPlaying())
         {
+            source.setPosition(initialPos + xPos, 0, 0);
+            xPos += 0.1;
+
             std::cout<< "\r "<<std::fixed<<std::setprecision(2)<<
                         source.getSecOffset().count()<<" / "<<(decoder->getLength()*invfreq);
             std::cout.flush();

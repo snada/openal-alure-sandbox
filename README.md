@@ -2,10 +2,6 @@
 
 Base project to compile a C++ program with OpenAL-Soft and Alure support.
 
-Alure 1.2 needs a small edit in it's CMakeLists file:
-
-`SET(CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")`
-
 ## Build
 
  `mkdir build`
@@ -18,4 +14,10 @@ Alure 1.2 needs a small edit in it's CMakeLists file:
 
  ## Run
 
-`./main`
+On Linux it should run on the fly: if your default device is OSS, then you should also install alsa-oss package to have it compatible.
+
+The run:
+
+`aoss ./main -hrtf default-48000 /path/to/file.wav`
+
+On MacOS, it should run (if I ever manage to have hrtf libs found on the system...!)
