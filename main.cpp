@@ -93,15 +93,17 @@ int main(int argc, char *argv[])
 
         alure::SharedPtr<alure::Decoder> decoder(ctx.createDecoder(argv[i]));
         alure::Source source = ctx.createSource();
+        source.setLooping(true); //call this before play!
 
         source.play(decoder, 12000, 4);
         std::cout<< "Playing "<<argv[i]<<" ("<<alure::GetSampleTypeName(decoder->getSampleType())<<", "
                                              <<alure::GetChannelConfigName(decoder->getChannelConfig())<<", "
                                              <<decoder->getFrequency()<<"hz)" <<std::endl;
+
         float initialPos = -10;
         float xPos = 0;
         source.setVelocity(0.1, 0, 0);
-        source.setLooping(true); //does not seem to work, need to know why
+
         float invfreq = 1.0f / decoder->getFrequency();
         while(source.isPlaying())
         {
