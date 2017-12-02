@@ -8,20 +8,19 @@
 namespace alure {
 
 class AuxiliaryEffectSlotImpl {
-    ContextImpl *const mContext;
-    ALuint mId;
+    ContextImpl &mContext;
+    ALuint mId{0};
 
     Vector<SourceSend> mSourceSends;
 
 public:
-    AuxiliaryEffectSlotImpl(ContextImpl *context, ALuint id)
-      : mContext(context), mId(id)
-    { }
+    AuxiliaryEffectSlotImpl(ContextImpl &context);
+    ~AuxiliaryEffectSlotImpl();
 
     void addSourceSend(SourceSend source_send);
     void removeSourceSend(SourceSend source_send);
 
-    ContextImpl *getContext() { return mContext; }
+    ContextImpl &getContext() { return mContext; }
     const ALuint &getId() const { return mId; }
 
     void setGain(ALfloat gain);
@@ -33,7 +32,7 @@ public:
 
     Vector<SourceSend> getSourceSends() const { return mSourceSends; }
 
-    bool isInUse() const { return (mSourceSends.size() > 0); }
+    size_t getUseCount() const { return mSourceSends.size(); }
 };
 
 } // namespace alure

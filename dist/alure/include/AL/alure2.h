@@ -29,6 +29,13 @@
   #define ALURE_API
  #endif
 #endif /* ALURE_API */
+#ifndef ALURE_TEMPLATE
+ #ifndef ALURE_STATIC_LIB
+  #define ALURE_TEMPLATE extern template
+ #else
+  #define ALURE_TEMPLATE template
+ #endif
+#endif /* ALURE_TEMPLATE */
 
 #ifndef EFXEAXREVERBPROPERTIES_DEFINED
 #define EFXEAXREVERBPROPERTIES_DEFINED
@@ -59,6 +66,18 @@ typedef struct {
 } EFXEAXREVERBPROPERTIES, *LPEFXEAXREVERBPROPERTIES;
 #endif
 
+#ifndef EFXCHORUSPROPERTIES_DEFINED
+#define EFXCHORUSPROPERTIES_DEFINED
+typedef struct {
+    int iWaveform;
+    int iPhase;
+    float flRate;
+    float flDepth;
+    float flFeedback;
+    float flDelay;
+} EFXCHORUSPROPERTIES, *LPEFXCHORUSPROPERTIES;
+#endif
+
 namespace alure {
 
 // Available class interfaces.
@@ -73,6 +92,7 @@ class AuxiliaryEffectSlot;
 class Effect;
 class Decoder;
 class DecoderFactory;
+class FileIOFactory;
 class MessageHandler;
 
 // Opaque class implementations.
@@ -86,13 +106,23 @@ class SourceGroupImpl;
 class AuxiliaryEffectSlotImpl;
 class EffectImpl;
 
-/** Convert a value from decibels to linear gain.  */
+}
+
+#ifndef ALURE_STATIC_LIB
+/****** Explicitly instantiate templates used by the lib ******/
+ALURE_TEMPLATE class ALURE_API ALURE_SHARED_PTR_TYPE<alure::DeviceManagerImpl>;
+/******/
+#endif
+
+namespace alure {
+
+/** Convert a value from decibels to linear gain. */
 template<typename T, typename NonRefT=RemoveRefT<T>,
          typename=EnableIfT<std::is_floating_point<NonRefT>::value>>
 constexpr inline NonRefT dBToLinear(T&& value)
 { return std::pow(NonRefT(10.0), std::forward<T>(value) / NonRefT(20.0)); }
 
-/** Convert a value from linear gain to decibels.  */
+/** Convert a value from linear gain to decibels. */
 template<typename T, typename NonRefT=RemoveRefT<T>,
          typename=EnableIfT<std::is_floating_point<NonRefT>::value>>
 constexpr inline NonRefT LinearTodB(T&& value)
@@ -234,7 +264,7 @@ enum class ChannelConfig {
 ALURE_API const char *GetChannelConfigName(ChannelConfig cfg);
 
 ALURE_API ALuint FramesToBytes(ALuint frames, ChannelConfig chans, SampleType type);
-ALURE_API ALuint BytesToFrames(ALuint bytes, ChannelConfig chans, SampleType type);
+ALURE_API ALuint BytesToFrames(ALuint bytes, ChannelConfig chans, SampleType type) noexcept;
 
 
 /** Class for storing a major.minor version number. */
@@ -273,28 +303,34 @@ private:                                                                      \
 public:                                                                       \
     using handle_type = ImplT*;                                               \
                                                                               \
-    BaseT() : pImpl(nullptr) { }                                              \
-    BaseT(ImplT *impl) : pImpl(impl) { }                                      \
-    BaseT(const BaseT&) = default;                                            \
-    BaseT(BaseT&& rhs) : pImpl(rhs.pImpl) { rhs.pImpl = nullptr; }            \
+    BaseT() noexcept : pImpl(nullptr) { }                                     \
+    BaseT(ImplT *impl) noexcept : pImpl(impl) { }                             \
+    BaseT(const BaseT&) noexcept = default;                                   \
+    BaseT(BaseT&& rhs) noexcept : pImpl(rhs.pImpl) { rhs.pImpl = nullptr; }   \
                                                                               \
-    BaseT& operator=(const BaseT&) = default;                                 \
-    BaseT& operator=(BaseT&& rhs)                                             \
+    BaseT& operator=(const BaseT&) noexcept = default;                        \
+    BaseT& operator=(BaseT&& rhs) noexcept                                    \
     {                                                                         \
         pImpl = rhs.pImpl; rhs.pImpl = nullptr;                               \
         return *this;                                                         \
     }                                                                         \
                                                                               \
-    bool operator==(const BaseT &rhs) const { return pImpl == rhs.pImpl; }    \
-    bool operator!=(const BaseT &rhs) const { return pImpl != rhs.pImpl; }    \
-    bool operator<=(const BaseT &rhs) const { return pImpl <= rhs.pImpl; }    \
-    bool operator>=(const BaseT &rhs) const { return pImpl >= rhs.pImpl; }    \
-    bool operator<(const BaseT &rhs) const { return pImpl < rhs.pImpl; }      \
-    bool operator>(const BaseT &rhs) const { return pImpl > rhs.pImpl; }      \
+    bool operator==(const BaseT &rhs) const noexcept                          \
+    { return pImpl == rhs.pImpl; }                                            \
+    bool operator!=(const BaseT &rhs) const noexcept                          \
+    { return pImpl != rhs.pImpl; }                                            \
+    bool operator<=(const BaseT &rhs) const noexcept                          \
+    { return pImpl <= rhs.pImpl; }                                            \
+    bool operator>=(const BaseT &rhs) const noexcept                          \
+    { return pImpl >= rhs.pImpl; }                                            \
+    bool operator<(const BaseT &rhs) const noexcept                           \
+    { return pImpl < rhs.pImpl; }                                             \
+    bool operator>(const BaseT &rhs) const noexcept                           \
+    { return pImpl > rhs.pImpl; }                                             \
                                                                               \
-    operator bool() const { return !!pImpl; }                                 \
+    operator bool() const noexcept { return !!pImpl; }                        \
                                                                               \
-    handle_type getHandle() const { return pImpl; }
+    handle_type getHandle() const noexcept { return pImpl; }
 
 enum class DeviceEnumeration {
     Basic = ALC_DEVICE_SPECIFIER,
@@ -310,19 +346,31 @@ enum class DefaultDeviceType {
 
 /**
  * A class managing Device objects and other related functionality. This class
- * is a singleton, only one instance will exist in a process.
+ * is a singleton, only one instance will exist in a process at a time.
  */
 class ALURE_API DeviceManager {
-    DeviceManagerImpl &pImpl;
+    SharedPtr<DeviceManagerImpl> pImpl;
 
-    DeviceManager(DeviceManagerImpl &impl) : pImpl(impl) { }
+    DeviceManager(SharedPtr<DeviceManagerImpl>&& impl) noexcept;
 
 public:
-    DeviceManager(const DeviceManager&) = default;
-    DeviceManager(DeviceManager&& rhs) : pImpl(rhs.pImpl) { }
+    /**
+     * Retrieves a reference-counted DeviceManager instance. When the last
+     * reference goes out of scope, the DeviceManager and any remaining managed
+     * resources are automatically cleaned up. Multiple calls will return the
+     * same instance as long as there is still a pre-existing reference to the
+     * instance, or else a new instance will be created.
+     */
+    static DeviceManager getInstance();
 
-    /** Retrieves the DeviceManager instance. */
-    static DeviceManager get();
+    DeviceManager() noexcept = default;
+    DeviceManager(const DeviceManager&) noexcept = default;
+    DeviceManager(DeviceManager&& rhs) noexcept = default;
+    ~DeviceManager();
+
+    DeviceManager& operator=(const DeviceManager&) noexcept = default;
+    DeviceManager& operator=(DeviceManager&&) noexcept = default;
+    DeviceManager& operator=(std::nullptr_t) noexcept { pImpl = nullptr; return *this; };
 
     /** Queries the existence of a non-device-specific ALC extension. */
     bool queryExtension(const String &name) const;
@@ -459,7 +507,7 @@ enum class DistanceModel {
     Inverse  = AL_INVERSE_DISTANCE,
     Linear   = AL_LINEAR_DISTANCE,
     Exponent = AL_EXPONENT_DISTANCE,
-    None  = AL_NONE,
+    None = AL_NONE,
 };
 
 class ALURE_API Context {
@@ -569,6 +617,9 @@ public:
      * actual Buffer when it's ready. The application must take care to handle
      * exceptions from the SharedFuture in case an unrecoverable error ocurred
      * during the load.
+     *
+     * If the Buffer is already fully loaded and cached, a SharedFuture is
+     * returned in a ready state containing it.
      */
     SharedFuture<Buffer> getBufferAsync(StringView name);
 
@@ -611,7 +662,7 @@ public:
 
     /**
      * Looks for a cached buffer using the given name and returns it. If the
-     * given name does not exist in the cache, and null buffer is returned.
+     * given name does not exist in the cache, a null buffer is returned.
      */
     Buffer findBuffer(StringView name);
 
@@ -620,17 +671,22 @@ public:
      * returns a SharedFuture for it. If the given name does not exist in the
      * cache, an invalid SharedFuture is returned (check with a call to
      * \c SharedFuture::valid).
+     *
+     * If the Buffer is already fully loaded and cached, a SharedFuture is
+     * returned in a ready state containing it.
      */
     SharedFuture<Buffer> findBufferAsync(StringView name);
 
     /**
      * Deletes the cached Buffer object for the given audio file or resource
-     * name. The buffer must not be in use by a Source.
+     * name, invalidating all Buffer objects with this name. If a source is
+     * currently playing the buffer, it will be stopped first.
      */
     void removeBuffer(StringView name);
     /**
-     * Deletes the given cached buffer. The buffer must not be in use by a
-     * Source.
+     * Deletes the given cached buffer, invalidating all other Buffer objects
+     * with the same name. Equivalent to calling
+     * removeBuffer(buffer.getName()).
      */
     void removeBuffer(Buffer buffer);
 
@@ -645,8 +701,7 @@ public:
 
     Effect createEffect();
 
-    SourceGroup getSourceGroup(StringView name);
-    SourceGroup findSourceGroup(StringView name);
+    SourceGroup createSourceGroup();
 
     /** Sets the doppler factor to apply to all source doppler calculations. */
     void setDopplerFactor(ALfloat factor);
@@ -690,7 +745,7 @@ public:
     void set3DParameters(const Vector3 &position, const Vector3 &velocity, const std::pair<Vector3,Vector3> &orientation);
 
     /** Specifies the listener's 3D position. */
-    void setPosition(ALfloat x, ALfloat y, ALfloat z);
+    void setPosition(const Vector3 &position);
     void setPosition(const ALfloat *pos);
 
     /**
@@ -698,21 +753,21 @@ public:
      * OpenAL, this does not actually alter the listener's position, and
      * instead just alters the pitch as determined by the doppler effect.
      */
-    void setVelocity(ALfloat x, ALfloat y, ALfloat z);
+    void setVelocity(const Vector3 &velocity);
     void setVelocity(const ALfloat *vel);
 
     /**
      * Specifies the listener's 3D orientation, using position-relative 'at'
      * and 'up' direction vectors.
      */
-    void setOrientation(ALfloat x1, ALfloat y1, ALfloat z1, ALfloat x2, ALfloat y2, ALfloat z2);
+    void setOrientation(const std::pair<Vector3,Vector3> &orientation);
     void setOrientation(const ALfloat *at, const ALfloat *up);
     void setOrientation(const ALfloat *ori);
 
     /**
      * Sets the number of meters per unit, used for various effects that rely
-     * on the distance in meters (including air absorption and initial reverb
-     * decay). If this is changed, it's strongly recommended to also set the
+     * on the distance in meters including air absorption and initial reverb
+     * decay. If this is changed, it's strongly recommended to also set the
      * speed of sound (e.g. context.setSpeedOfSound(343.3 / m_u) to maintain a
      * realistic 343.3m/s for sound propagation).
      */
@@ -769,8 +824,13 @@ public:
     /** Retrieves the name the buffer was created with. */
     StringView getName() const;
 
-    /** Queries if the buffer is in use and can't be removed. */
-    bool isInUse() const;
+    /**
+     * Queries the number of sources currently using the buffer. Be aware that
+     * you need to call \c Context::update to reliably ensure the count is kept
+     * updated for when sources reach their end. This is equivalent to calling
+     * getSources().size().
+     */
+    size_t getSourceCount() const;
 };
 
 
@@ -962,7 +1022,7 @@ public:
     void set3DParameters(const Vector3 &position, const Vector3 &velocity, const std::pair<Vector3,Vector3> &orientation);
 
     /** Specifies the source's 3D position. */
-    void setPosition(ALfloat x, ALfloat y, ALfloat z);
+    void setPosition(const Vector3 &position);
     void setPosition(const ALfloat *pos);
     Vector3 getPosition() const;
 
@@ -971,7 +1031,7 @@ public:
      * this does not actually alter the source's position, and instead just
      * alters the pitch as determined by the doppler effect.
      */
-    void setVelocity(ALfloat x, ALfloat y, ALfloat z);
+    void setVelocity(const Vector3 &velocity);
     void setVelocity(const ALfloat *vel);
     Vector3 getVelocity() const;
 
@@ -979,7 +1039,7 @@ public:
      * Specifies the source's 3D facing direction. Deprecated in favor of
      * setOrientation.
      */
-    void setDirection(ALfloat x, ALfloat y, ALfloat z);
+    void setDirection(const Vector3 &direction);
     void setDirection(const ALfloat *dir);
     Vector3 getDirection() const;
 
@@ -989,7 +1049,7 @@ public:
      * property comes from, this also affects the facing direction, superceding
      * setDirection.
      */
-    void setOrientation(ALfloat x1, ALfloat y1, ALfloat z1, ALfloat x2, ALfloat y2, ALfloat z2);
+    void setOrientation(const std::pair<Vector3,Vector3> &orientation);
     void setOrientation(const ALfloat *at, const ALfloat *up);
     void setOrientation(const ALfloat *ori);
     std::pair<Vector3,Vector3> getOrientation() const;
@@ -1137,9 +1197,6 @@ class ALURE_API SourceGroup {
     MAKE_PIMPL(SourceGroup, SourceGroupImpl)
 
 public:
-    /** Retrieves the associated name of the source group. */
-    StringView getName() const;
-
     /**
      * Adds this source group as a subgroup of the specified source group. This
      * method will throw an exception if this group is being added to a group
@@ -1219,8 +1276,8 @@ public:
     void applyEffect(Effect effect);
 
     /**
-     * Releases the effect slot, returning it to the system. It must not be in
-     * use by a source.
+     * Releases the effect slot, returning it to the system. If the effect slot
+     * is currently set on a source send, it will be removed first.
      */
     void release();
 
@@ -1231,8 +1288,11 @@ public:
      */
     Vector<SourceSend> getSourceSends() const;
 
-    /** Determines if the effect slot is in use by a source. */
-    bool isInUse() const;
+    /**
+     * Queries the number of source sends the effect slot is used by. This is
+     * equivalent to calling getSourceSends().size().
+     */
+    size_t getUseCount() const;
 };
 
 
@@ -1247,6 +1307,12 @@ public:
      */
     void setReverbProperties(const EFXEAXREVERBPROPERTIES &props);
 
+    /**
+     * Updates the effect with the specified chorus properties. If the chorus
+     * effect is not supported, an exception will be thrown.
+     */
+    void setChorusProperties(const EFXCHORUSPROPERTIES &props);
+
     void destroy();
 };
 
@@ -1260,36 +1326,36 @@ public:
     virtual ~Decoder();
 
     /** Retrieves the sample frequency, in hz, of the audio being decoded. */
-    virtual ALuint getFrequency() const = 0;
+    virtual ALuint getFrequency() const noexcept = 0;
     /** Retrieves the channel configuration of the audio being decoded. */
-    virtual ChannelConfig getChannelConfig() const = 0;
+    virtual ChannelConfig getChannelConfig() const noexcept = 0;
     /** Retrieves the sample type of the audio being decoded. */
-    virtual SampleType getSampleType() const = 0;
+    virtual SampleType getSampleType() const noexcept = 0;
 
     /**
      * Retrieves the total length of the audio, in sample frames. If unknown,
      * returns 0. Note that if the returned length is 0, the decoder may not be
      * used to load a Buffer.
      */
-    virtual uint64_t getLength() const = 0;
+    virtual uint64_t getLength() const noexcept = 0;
     /**
      * Seek to pos, specified in sample frames. Returns true if the seek was
      * successful.
      */
-    virtual bool seek(uint64_t pos) = 0;
+    virtual bool seek(uint64_t pos) noexcept = 0;
 
     /**
      * Retrieves the loop points, in sample frames, as a [start,end) pair. If
      * start >= end, all available samples are included in the loop.
      */
-    virtual std::pair<uint64_t,uint64_t> getLoopPoints() const = 0;
+    virtual std::pair<uint64_t,uint64_t> getLoopPoints() const noexcept = 0;
 
     /**
      * Decodes count sample frames, writing them to ptr, and returns the number
      * of sample frames written. Returning less than the requested count
      * indicates the end of the audio.
      */
-    virtual ALuint read(ALvoid *ptr, ALuint count) = 0;
+    virtual ALuint read(ALvoid *ptr, ALuint count) noexcept = 0;
 };
 
 /**
@@ -1308,7 +1374,7 @@ public:
      *
      * \return nullptr if a decoder can't be created from the file.
      */
-    virtual SharedPtr<Decoder> createDecoder(UniquePtr<std::istream> &file) = 0;
+    virtual SharedPtr<Decoder> createDecoder(UniquePtr<std::istream> &file) noexcept = 0;
 };
 
 /**
@@ -1336,7 +1402,7 @@ ALURE_API void RegisterDecoder(StringView name, UniquePtr<DecoderFactory> factor
  * \return The unregistered decoder factory instance, or 0 (nullptr) if a
  * decoder factory with the given name doesn't exist.
  */
-ALURE_API UniquePtr<DecoderFactory> UnregisterDecoder(StringView name);
+ALURE_API UniquePtr<DecoderFactory> UnregisterDecoder(StringView name) noexcept;
 
 
 /**
@@ -1351,18 +1417,18 @@ public:
      * previous factory was set, it's returned to the application. Passing in a
      * nullptr reverts to the default.
      */
-    static UniquePtr<FileIOFactory> set(UniquePtr<FileIOFactory> factory);
+    static UniquePtr<FileIOFactory> set(UniquePtr<FileIOFactory> factory) noexcept;
 
     /**
      * Gets the current FileIOFactory instance being used by the audio
      * decoders.
      */
-    static FileIOFactory &get();
+    static FileIOFactory &get() noexcept;
 
     virtual ~FileIOFactory();
 
     /** Opens a read-only binary file for the given name. */
-    virtual UniquePtr<std::istream> openFile(const String &name) = 0;
+    virtual UniquePtr<std::istream> openFile(const String &name) noexcept = 0;
 };
 
 
@@ -1391,7 +1457,7 @@ public:
      * disconnected. This method may not be called if the device lacks support
      * for the ALC_EXT_disconnect extension.
      */
-    virtual void deviceDisconnected(Device device);
+    virtual void deviceDisconnected(Device device) noexcept;
 
     /**
      * Called when the given source reaches the end of the buffer or stream.
@@ -1399,15 +1465,16 @@ public:
      * Sources that stopped automatically will be detected upon a call to
      * Context::update.
      */
-    virtual void sourceStopped(Source source);
+    virtual void sourceStopped(Source source) noexcept;
 
     /**
      * Called when the given source was forced to stop. This can be because
      * either there were no more mixing sources and a higher-priority source
-     * preempted it, or it's part of a SourceGroup (or sub-group thereof) that
-     * had its SourceGroup::stopAll method called.
+     * preempted it, it's part of a SourceGroup (or sub-group thereof) that had
+     * its SourceGroup::stopAll method called, or it was playing a buffer
+     * that's getting removed.
      */
-    virtual void sourceForceStopped(Source source);
+    virtual void sourceForceStopped(Source source) noexcept;
 
     /**
      * Called when a new buffer is about to be created and loaded. May be
@@ -1419,7 +1486,7 @@ public:
      * \param samplerate Sample rate of the given audio data.
      * \param data The audio data that is about to be fed to the OpenAL buffer.
      */
-    virtual void bufferLoading(StringView name, ChannelConfig channels, SampleType type, ALuint samplerate, ArrayView<ALbyte> data);
+    virtual void bufferLoading(StringView name, ChannelConfig channels, SampleType type, ALuint samplerate, ArrayView<ALbyte> data) noexcept;
 
     /**
      * Called when a resource isn't found, allowing the app to substitute in a
@@ -1433,7 +1500,7 @@ public:
      * \return The replacement resource name to use instead. Returning an empty
      *         string means to stop trying.
      */
-    virtual String resourceNotFound(StringView name);
+    virtual String resourceNotFound(StringView name) noexcept;
 };
 
 #undef MAKE_PIMPL

@@ -15,15 +15,13 @@ struct SourceGroupProps {
 };
 
 class SourceGroupImpl : SourceGroupProps {
-    ContextImpl *const mContext;
+    ContextImpl &mContext;
 
     Vector<SourceImpl*> mSources;
     Vector<SourceGroupImpl*> mSubGroups;
 
     SourceGroupProps mParentProps;
     SourceGroupImpl *mParent;
-
-    const String mName;
 
     void update(ALfloat gain, ALfloat pitch);
 
@@ -44,9 +42,7 @@ class SourceGroupImpl : SourceGroupProps {
     void updateStoppedStatus() const;
 
 public:
-    SourceGroupImpl(ContextImpl *context, StringView name)
-      : mContext(context), mParent(nullptr), mName(String(name))
-    { }
+    SourceGroupImpl(ContextImpl &context) : mContext(context), mParent(nullptr) { }
 
     ALfloat getAppliedGain() const { return mGain * mParentProps.mGain; }
     ALfloat getAppliedPitch() const { return mPitch * mParentProps.mPitch; }
@@ -71,8 +67,6 @@ public:
     void resumeAll() const;
 
     void stopAll() const;
-
-    StringView getName() const { return mName; }
 
     void release();
 };

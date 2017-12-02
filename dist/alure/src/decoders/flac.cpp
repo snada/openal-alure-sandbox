@@ -5,6 +5,8 @@
 #include <iostream>
 #include <cstring>
 
+#include "main.h"
+
 #include "FLAC/all.h"
 
 
@@ -14,17 +16,18 @@ namespace alure
 class FlacDecoder final : public Decoder {
     UniquePtr<std::istream> mFile;
 
-    FLAC__StreamDecoder *mFlacFile;
-    ChannelConfig mChannelConfig;
-    SampleType mSampleType;
-    ALuint mFrequency;
-    ALuint mFrameSize;
+    FLAC__StreamDecoder *mFlacFile{nullptr};
+    ChannelConfig mChannelConfig{ChannelConfig::Mono};
+    SampleType mSampleType{SampleType::UInt8};
+    ALuint mFrequency{0};
+    ALuint mFrameSize{0};
+    std::pair<uint64_t,uint64_t> mLoopPts{0, 0};
 
     Vector<ALubyte> mData;
 
-    ALubyte *mOutBytes;
-    ALuint mOutMax;
-    ALuint mOutLen;
+    ALubyte *mOutBytes{nullptr};
+    ALuint mOutMax{0};
+    ALuint mOutLen{0};
 
     void CopySamples(ALubyte *output, ALuint todo, const FLAC__Frame *frame, const FLAC__int32 *const buffer[], ALuint offset)
     {
@@ -76,36 +79,6 @@ class FlacDecoder final : public Decoder {
     {
         FlacDecoder *self = static_cast<FlacDecoder*>(client_data);
 
-        if(self->mFrequency == 0)
-        {
-            if(frame->header.channels == 1)
-                self->mChannelConfig = ChannelConfig::Mono;
-            else if(frame->header.channels == 2)
-                self->mChannelConfig = ChannelConfig::Stereo;
-            else
-                return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT;
-
-            ALuint bps = frame->header.bits_per_sample;
-            if(bps > 16 && Context::GetCurrent().isSupported(self->mChannelConfig, SampleType::Float32))
-            {
-                self->mSampleType = SampleType::Float32;
-                bps = 32;
-            }
-            else if(bps > 8)
-            {
-                self->mSampleType = SampleType::Int16;
-                bps = 16;
-            }
-            else
-            {
-                self->mSampleType = SampleType::UInt8;
-                bps = 8;
-            }
-
-            self->mFrameSize = frame->header.channels * bps/8;
-            self->mFrequency = frame->header.sample_rate;
-        }
-
         ALubyte *data = self->mOutBytes + self->mOutLen;
         ALuint todo = std::min<ALuint>((self->mOutMax-self->mOutLen) / self->mFrameSize,
                                        frame->header.blocksize);
@@ -128,8 +101,84 @@ class FlacDecoder final : public Decoder {
 
         return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
     }
-    static void MetadataCallback(const FLAC__StreamDecoder*,const FLAC__StreamMetadata*,void*)
+    static void MetadataCallback(const FLAC__StreamDecoder*, const FLAC__StreamMetadata *mdata, void *client_data)
     {
+        FlacDecoder *self = static_cast<FlacDecoder*>(client_data);
+
+        if(mdata->type == FLAC__METADATA_TYPE_STREAMINFO)
+        {
+            // Ignore duplicate StreamInfo blocks
+            if(self->mFrequency != 0)
+                return;
+
+            const FLAC__StreamMetadata_StreamInfo &info = mdata->data.stream_info;
+            if(info.channels == 1)
+                self->mChannelConfig = ChannelConfig::Mono;
+            else if(info.channels == 2)
+                self->mChannelConfig = ChannelConfig::Stereo;
+            else
+                return;
+
+            ALuint bps = info.bits_per_sample;
+            if(bps > 16 && Context::GetCurrent().isSupported(self->mChannelConfig, SampleType::Float32))
+            {
+                self->mSampleType = SampleType::Float32;
+                bps = 32;
+            }
+            else if(bps > 8)
+            {
+                self->mSampleType = SampleType::Int16;
+                bps = 16;
+            }
+            else
+            {
+                self->mSampleType = SampleType::UInt8;
+                bps = 8;
+            }
+
+            self->mFrameSize = info.channels * bps/8;
+            self->mFrequency = info.sample_rate;
+        }
+        else if(mdata->type == FLAC__METADATA_TYPE_VORBIS_COMMENT)
+        {
+            const FLAC__StreamMetadata_VorbisComment &vc = mdata->data.vorbis_comment;
+            for(FLAC__uint32 i = 0;i < vc.num_comments;i++)
+            {
+                auto seppos = StringView(
+                    (char*)vc.comments[i].entry, vc.comments[i].length
+                ).find_first_of('=');
+                if(seppos == StringView::npos) continue;
+
+                StringView key((char*)vc.comments[i].entry, seppos);
+                StringView val((char*)vc.comments[i].entry+seppos+1,
+                               vc.comments[i].length-(seppos+1));
+
+                // RPG Maker seems to recognize LOOPSTART and LOOPLENGTH for
+                // loop points in a Vorbis comment. ZDoom recognizes LOOP_START
+                // and LOOP_END. We can recognize both.
+                if(key == "LOOP_START" || key == "LOOPSTART")
+                {
+                    auto pt = ParseTimeval(val, self->mFrequency);
+                    if(pt.index() == 1) self->mLoopPts.first = std::get<1>(pt);
+                    continue;
+                }
+
+                if(key == "LOOP_END")
+                {
+                    auto pt = ParseTimeval(val, self->mFrequency);
+                    if(pt.index() == 1) self->mLoopPts.second = std::get<1>(pt);
+                    continue;
+                }
+
+                if(key == "LOOPLENGTH")
+                {
+                    auto pt = ParseTimeval(val, self->mFrequency);
+                    if(pt.index() == 1)
+                        self->mLoopPts.second = self->mLoopPts.first + std::get<1>(pt);
+                    continue;
+                }
+            }
+        }
     }
     static void ErrorCallback(const FLAC__StreamDecoder*,FLAC__StreamDecoderErrorStatus,void*)
     {
@@ -190,24 +239,21 @@ class FlacDecoder final : public Decoder {
     }
 
 public:
-    FlacDecoder()
-      : mFlacFile(nullptr), mChannelConfig(ChannelConfig::Mono), mSampleType(SampleType::Int16)
-      , mFrequency(0), mFrameSize(0), mOutBytes(nullptr), mOutMax(0), mOutLen(0)
-    { }
+    FlacDecoder() noexcept { }
     ~FlacDecoder() override;
 
-    bool open(UniquePtr<std::istream> &file);
+    bool open(UniquePtr<std::istream> &file) noexcept;
 
-    ALuint getFrequency() const override;
-    ChannelConfig getChannelConfig() const override;
-    SampleType getSampleType() const override;
+    ALuint getFrequency() const noexcept override;
+    ChannelConfig getChannelConfig() const noexcept override;
+    SampleType getSampleType() const noexcept override;
 
-    uint64_t getLength() const override;
-    bool seek(uint64_t pos) override;
+    uint64_t getLength() const noexcept override;
+    bool seek(uint64_t pos) noexcept override;
 
-    std::pair<uint64_t,uint64_t> getLoopPoints() const override;
+    std::pair<uint64_t,uint64_t> getLoopPoints() const noexcept override;
 
-    ALuint read(ALvoid *ptr, ALuint count) override;
+    ALuint read(ALvoid *ptr, ALuint count) noexcept override;
 };
 
 FlacDecoder::~FlacDecoder()
@@ -221,7 +267,7 @@ FlacDecoder::~FlacDecoder()
 }
 
 
-bool FlacDecoder::open(UniquePtr<std::istream> &file)
+bool FlacDecoder::open(UniquePtr<std::istream> &file) noexcept
 {
     mFlacFile = FLAC__stream_decoder_new();
     if(mFlacFile)
@@ -229,14 +275,11 @@ bool FlacDecoder::open(UniquePtr<std::istream> &file)
         mFile = std::move(file);
         if(FLAC__stream_decoder_init_stream(mFlacFile, ReadCallback, SeekCallback, TellCallback, LengthCallback, EofCallback, WriteCallback, MetadataCallback, ErrorCallback, this) == FLAC__STREAM_DECODER_INIT_STATUS_OK)
         {
-            while(mData.empty())
+            if(FLAC__stream_decoder_process_until_end_of_metadata(mFlacFile) != false)
             {
-                if(FLAC__stream_decoder_process_single(mFlacFile) == false ||
-                   FLAC__stream_decoder_get_state(mFlacFile) == FLAC__STREAM_DECODER_END_OF_STREAM)
-                    break;
+                if(mFrequency != 0)
+                    return true;
             }
-            if(!mData.empty())
-                return true;
 
             FLAC__stream_decoder_finish(mFlacFile);
         }
@@ -250,40 +293,38 @@ bool FlacDecoder::open(UniquePtr<std::istream> &file)
 }
 
 
-ALuint FlacDecoder::getFrequency() const
+ALuint FlacDecoder::getFrequency() const noexcept
 {
     return mFrequency;
 }
 
-ChannelConfig FlacDecoder::getChannelConfig() const
+ChannelConfig FlacDecoder::getChannelConfig() const noexcept
 {
     return mChannelConfig;
 }
 
-SampleType FlacDecoder::getSampleType() const
+SampleType FlacDecoder::getSampleType() const noexcept
 {
     return mSampleType;
 }
 
 
-uint64_t FlacDecoder::getLength() const
+uint64_t FlacDecoder::getLength() const noexcept
 {
     return FLAC__stream_decoder_get_total_samples(mFlacFile);
 }
 
-bool FlacDecoder::seek(uint64_t pos)
+bool FlacDecoder::seek(uint64_t pos) noexcept
 {
-    if(!FLAC__stream_decoder_seek_absolute(mFlacFile, pos))
-        return false;
-    return true;
+    return FLAC__stream_decoder_seek_absolute(mFlacFile, pos);
 }
 
-std::pair<uint64_t,uint64_t> FlacDecoder::getLoopPoints() const
+std::pair<uint64_t,uint64_t> FlacDecoder::getLoopPoints() const noexcept
 {
-    return std::make_pair(0, 0);
+    return mLoopPts;
 }
 
-ALuint FlacDecoder::read(ALvoid *ptr, ALuint count)
+ALuint FlacDecoder::read(ALvoid *ptr, ALuint count) noexcept
 {
     mOutBytes = reinterpret_cast<ALubyte*>(ptr);
     mOutLen = 0;
@@ -307,7 +348,7 @@ ALuint FlacDecoder::read(ALvoid *ptr, ALuint count)
 }
 
 
-SharedPtr<Decoder> FlacDecoderFactory::createDecoder(UniquePtr<std::istream> &file)
+SharedPtr<Decoder> FlacDecoderFactory::createDecoder(UniquePtr<std::istream> &file) noexcept
 {
     auto decoder = MakeShared<FlacDecoder>();
     if(!decoder->open(file)) decoder.reset();

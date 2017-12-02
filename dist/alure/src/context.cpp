@@ -8,7 +8,6 @@
 #include <functional>
 #include <memory>
 #include <iostream>
-#include <sstream>
 #include <fstream>
 #include <cstring>
 #include <map>
@@ -16,6 +15,9 @@
 
 #include "alc.h"
 
+#ifdef HAVE_WAVE
+#include "decoders/wave.hpp"
+#endif
 #ifdef HAVE_VORBISFILE
 #include "decoders/vorbisfile.hpp"
 #endif
@@ -31,7 +33,6 @@
 #ifdef HAVE_MPG123
 #include "decoders/mpg123.hpp"
 #endif
-#include "decoders/wave.hpp"
 
 #include "devicemanager.h"
 #include "device.h"
@@ -46,8 +47,7 @@
 #include <windows.h>
 #endif
 
-namespace std
-{
+namespace std {
 
 // Implements a FNV-1a hash for StringView. NOTE: This is *NOT* guaranteed
 // compatible with std::hash<String>! The standard does not give any specific
@@ -86,11 +86,10 @@ struct hash<alure::StringView> {
 
 }
 
-namespace
-{
+namespace {
 
 // Global mutex to protect global context changes
-std::mutex mGlobalCtxMutex;
+std::mutex gGlobalCtxMutex;
 
 #ifdef _WIN32
 // Windows' std::ifstream fails with non-ANSI paths since the standard only
@@ -100,7 +99,7 @@ std::mutex mGlobalCtxMutex;
 // that accepts UTF-8 paths and forwards to Unicode-aware I/O functions.
 class StreamBuf final : public std::streambuf {
     alure::Array<char_type,4096> mBuffer;
-    HANDLE mFile;
+    HANDLE mFile{INVALID_HANDLE_VALUE};
 
     int_type underflow() override
     {
@@ -108,9 +107,8 @@ class StreamBuf final : public std::streambuf {
         {
             // Read in the next chunk of data, and set the pointers on success
             DWORD got = 0;
-            if(!ReadFile(mFile, mBuffer.data(), mBuffer.size(), &got, NULL))
-                got = 0;
-            setg(mBuffer.data(), mBuffer.data(), mBuffer.data()+got);
+            if(ReadFile(mFile, mBuffer.data(), mBuffer.size(), &got, NULL))
+                setg(mBuffer.data(), mBuffer.data(), mBuffer.data()+got);
         }
         if(gptr() == egptr())
             return traits_type::eof();
@@ -162,7 +160,7 @@ class StreamBuf final : public std::streambuf {
             default:
                 return traits_type::eof();
         }
-        setg(0, 0, 0);
+        setg(nullptr, nullptr, nullptr);
         return fpos.QuadPart;
     }
 
@@ -177,7 +175,7 @@ class StreamBuf final : public std::streambuf {
         if(!SetFilePointerEx(mFile, fpos, &fpos, FILE_BEGIN))
             return traits_type::eof();
 
-        setg(0, 0, 0);
+        setg(nullptr, nullptr, nullptr);
         return fpos.QuadPart;
     }
 
@@ -199,10 +197,9 @@ public:
         return true;
     }
 
-    bool is_open() const { return mFile != INVALID_HANDLE_VALUE; }
+    bool is_open() const noexcept { return mFile != INVALID_HANDLE_VALUE; }
 
-    StreamBuf() : mFile(INVALID_HANDLE_VALUE)
-    { }
+    StreamBuf() = default;
     ~StreamBuf() override
     {
         if(mFile != INVALID_HANDLE_VALUE)
@@ -213,24 +210,26 @@ public:
 
 // Inherit from std::istream to use our custom streambuf
 class Stream final : public std::istream {
-public:
-    Stream(const char *filename) : std::istream(new StreamBuf())
-    {
-        // Set the failbit if the file failed to open.
-        if(!(static_cast<StreamBuf*>(rdbuf())->open(filename)))
-            clear(failbit);
-    }
-    ~Stream() override
-    { delete rdbuf(); }
+    StreamBuf mStreamBuf;
 
-    bool is_open() const { return static_cast<StreamBuf*>(rdbuf())->is_open(); }
+public:
+    Stream(const char *filename) : std::istream(nullptr)
+    {
+        init(&mStreamBuf);
+
+        // Set the failbit if the file failed to open.
+        if(!mStreamBuf.open(filename)) clear(failbit);
+    }
+
+    bool is_open() const noexcept { return mStreamBuf.is_open(); }
 };
 #endif
 
 using DecoderEntryPair = std::pair<alure::String,alure::UniquePtr<alure::DecoderFactory>>;
 const DecoderEntryPair sDefaultDecoders[] = {
+#ifdef HAVE_WAVE
     { "_alure_int_wave", alure::MakeUnique<alure::WaveDecoderFactory>() },
-
+#endif
 #ifdef HAVE_VORBISFILE
     { "_alure_int_vorbis", alure::MakeUnique<alure::VorbisFileDecoderFactory>() },
 #endif
@@ -250,40 +249,39 @@ const DecoderEntryPair sDefaultDecoders[] = {
 alure::Vector<DecoderEntryPair> sDecoders;
 
 
-template<typename T>
-alure::DecoderOrExceptT GetDecoder(alure::UniquePtr<std::istream> &file, T start, T end)
+alure::DecoderOrExceptT GetDecoder(alure::UniquePtr<std::istream> &file,
+                                   alure::ArrayView<DecoderEntryPair> decoders)
 {
-    alure::DecoderOrExceptT ret;
-    while(start != end)
+    while(!decoders.empty())
     {
-        alure::DecoderFactory *factory = start->second.get();
+        alure::DecoderFactory *factory = decoders.front().second.get();
         auto decoder = factory->createDecoder(file);
-        if(decoder) return (ret = std::move(decoder));
+        if(decoder) return std::move(decoder);
 
         if(!file || !(file->clear(),file->seekg(0)))
-            return (ret = std::make_exception_ptr(std::runtime_error(
-                "Failed to rewind file for the next decoder factory"
-            )));
+            return std::make_exception_ptr(
+                std::runtime_error("Failed to rewind file for the next decoder factory")
+            );
 
-        ++start;
+        decoders = decoders.slice(1);
     }
 
-    return (ret = alure::SharedPtr<alure::Decoder>(nullptr));
+    return alure::SharedPtr<alure::Decoder>(nullptr);
 }
 
 static alure::DecoderOrExceptT GetDecoder(alure::UniquePtr<std::istream> file)
 {
-    auto decoder = GetDecoder(file, sDecoders.begin(), sDecoders.end());
+    auto decoder = GetDecoder(file, sDecoders);
     if(std::holds_alternative<std::exception_ptr>(decoder)) return decoder;
     if(std::get<alure::SharedPtr<alure::Decoder>>(decoder)) return decoder;
-    decoder = GetDecoder(file, std::begin(sDefaultDecoders), std::end(sDefaultDecoders));
+    decoder = GetDecoder(file, sDefaultDecoders);
     if(std::holds_alternative<std::exception_ptr>(decoder)) return decoder;
     if(std::get<alure::SharedPtr<alure::Decoder>>(decoder)) return decoder;
     return (decoder = std::make_exception_ptr(std::runtime_error("No decoder found")));
 }
 
 class DefaultFileIOFactory final : public alure::FileIOFactory {
-    alure::UniquePtr<std::istream> openFile(const alure::String &name) override
+    alure::UniquePtr<std::istream> openFile(const alure::String &name) noexcept override
     {
 #ifdef _WIN32
         auto file = alure::MakeUnique<Stream>(name.c_str());
@@ -300,10 +298,85 @@ alure::UniquePtr<alure::FileIOFactory> sFileFactory;
 
 }
 
-namespace alure
-{
+namespace alure {
 
-using Vector3Pair = std::pair<Vector3,Vector3>;
+static inline void CheckContext(const ContextImpl *ctx)
+{
+    auto count = ContextImpl::sContextSetCount.load(std::memory_order_acquire);
+    if(UNLIKELY(count != ctx->mContextSetCounter))
+    {
+        if(UNLIKELY(ctx != ContextImpl::GetCurrent()))
+            throw std::runtime_error("Called context is not current");
+        ctx->mContextSetCounter = count;
+    }
+}
+
+std::variant<std::monostate,uint64_t> ParseTimeval(StringView strval, double srate) noexcept
+{
+    try {
+        size_t endpos;
+        size_t cpos = strval.find_first_of(':');
+        if(cpos == StringView::npos)
+        {
+            // No colon is present, treat it as a plain sample offset
+            uint64_t val = std::stoull(String(strval), &endpos);
+            if(endpos != strval.length()) return {};
+            return val;
+        }
+
+        // Value is not a sample offset. Its format is [[HH:]MM]:SS[.sss] (at
+        // least one colon must exist to be interpreted this way).
+        uint64_t val = 0;
+
+        if(cpos != 0)
+        {
+            // If a non-empty first value, parse it (may be hours or minutes)
+            val = std::stoul(String(strval.data(), cpos), &endpos);
+            if(endpos != cpos) return {};
+        }
+
+        strval = strval.substr(cpos+1);
+        cpos = strval.find_first_of(':');
+        if(cpos != StringView::npos)
+        {
+            // If a second colon is present, the first value was hours and this is
+            // minutes, otherwise the first value was minutes.
+            uint64_t val2 = 0;
+
+            if(cpos != 0)
+            {
+                val2 = std::stoul(String(strval.data(), cpos), &endpos);
+                if(endpos != cpos || val2 >= 60) return {};
+            }
+
+            // Combines hours and minutes into the full minute count
+            if(val > std::numeric_limits<uint64_t>::max()/60)
+                return {};
+            val = val*60 + val2;
+            strval = strval.substr(cpos+1);
+        }
+
+        double secs = 0.0;
+        if(!strval.empty())
+        {
+            // Parse the seconds and its fraction. Only include the first 3 decimal
+            // places for millisecond precision.
+            size_t dpos = strval.find_first_of('.');
+            String str = (dpos == StringView::npos) ?
+                         String(strval) : String(strval.substr(0, dpos+4));
+            secs = std::stod(str, &endpos);
+            if(endpos != str.length() || !(secs >= 0.0 && secs < 60.0))
+                return {};
+        }
+
+        // Convert minutes to seconds, add the seconds, then convert to samples.
+        return static_cast<uint64_t>((val*60.0 + secs) * srate);
+    }
+    catch(...) {
+    }
+
+    return {};
+}
 
 
 Decoder::~Decoder() { }
@@ -320,31 +393,32 @@ void RegisterDecoder(StringView name, UniquePtr<DecoderFactory> factory)
     sDecoders.insert(iter, std::make_pair(String(name), std::move(factory)));
 }
 
-UniquePtr<DecoderFactory> UnregisterDecoder(StringView name)
+UniquePtr<DecoderFactory> UnregisterDecoder(StringView name) noexcept
 {
+    UniquePtr<DecoderFactory> factory;
     auto iter = std::lower_bound(sDecoders.begin(), sDecoders.end(), name,
-        [](const DecoderEntryPair &entry, StringView rhs) -> bool
+        [](const DecoderEntryPair &entry, StringView rhs) noexcept -> bool
         { return entry.first < rhs; }
     );
     if(iter != sDecoders.end())
     {
-        UniquePtr<DecoderFactory> factory = std::move(iter->second);
+        factory = std::move(iter->second);
         sDecoders.erase(iter);
         return factory;
     }
-    return nullptr;
+    return factory;
 }
 
 
 FileIOFactory::~FileIOFactory() { }
 
-UniquePtr<FileIOFactory> FileIOFactory::set(UniquePtr<FileIOFactory> factory)
+UniquePtr<FileIOFactory> FileIOFactory::set(UniquePtr<FileIOFactory> factory) noexcept
 {
-    std::swap(sFileFactory, factory);
+    sFileFactory.swap(factory);
     return factory;
 }
 
-FileIOFactory &FileIOFactory::get()
+FileIOFactory &FileIOFactory::get() noexcept
 {
     FileIOFactory *factory = sFileFactory.get();
     if(factory) return *factory;
@@ -357,23 +431,23 @@ MessageHandler::~MessageHandler()
 {
 }
 
-void MessageHandler::deviceDisconnected(Device)
+void MessageHandler::deviceDisconnected(Device) noexcept
 {
 }
 
-void MessageHandler::sourceStopped(Source)
+void MessageHandler::sourceStopped(Source) noexcept
 {
 }
 
-void MessageHandler::sourceForceStopped(Source)
+void MessageHandler::sourceForceStopped(Source) noexcept
 {
 }
 
-void MessageHandler::bufferLoading(StringView, ChannelConfig, SampleType, ALuint, ArrayView<ALbyte>)
+void MessageHandler::bufferLoading(StringView, ChannelConfig, SampleType, ALuint, ArrayView<ALbyte>) noexcept
 {
 }
 
-String MessageHandler::resourceNotFound(StringView)
+String MessageHandler::resourceNotFound(StringView) noexcept
 {
     return String();
 }
@@ -436,7 +510,7 @@ static void LoadSourceLatency(ContextImpl *ctx)
 }
 
 static const struct {
-    enum AL extension;
+    AL extension;
     const char name[32];
     void (&loader)(ContextImpl*);
 } ALExtensionList[] = {
@@ -469,7 +543,7 @@ std::atomic<uint64_t> ContextImpl::sContextSetCount{0};
 
 void ContextImpl::MakeCurrent(ContextImpl *context)
 {
-    std::unique_lock<std::mutex> ctxlock(mGlobalCtxMutex);
+    std::unique_lock<std::mutex> ctxlock(gGlobalCtxMutex);
 
     if(alcMakeContextCurrent(context ? context->getALCcontext() : nullptr) == ALC_FALSE)
         throw std::runtime_error("Call to alcMakeContextCurrent failed");
@@ -512,8 +586,7 @@ void ContextImpl::MakeThreadCurrent(ContextImpl *context)
 
 void ContextImpl::setupExts()
 {
-    ALCdevice *device = mDevice->getALCdevice();
-    mHasExt.clear();
+    ALCdevice *device = mDevice.getALCdevice();
     for(const auto &entry : ALExtensionList)
     {
         if((strncmp(entry.name, "ALC", 3) == 0) ? alcIsExtensionPresent(device, entry.name) :
@@ -528,12 +601,12 @@ void ContextImpl::setupExts()
 
 void ContextImpl::backgroundProc()
 {
-    if(DeviceManagerImpl::SetThreadContext && mDevice->hasExtension(ALC::EXT_thread_local_context))
+    if(DeviceManagerImpl::SetThreadContext && mDevice.hasExtension(ALC::EXT_thread_local_context))
         DeviceManagerImpl::SetThreadContext(getALCcontext());
 
     std::chrono::steady_clock::time_point basetime = std::chrono::steady_clock::now();
     std::chrono::milliseconds waketime(0);
-    std::unique_lock<std::mutex> ctxlock(mGlobalCtxMutex);
+    std::unique_lock<std::mutex> ctxlock(gGlobalCtxMutex);
     while(!mQuitThread.load(std::memory_order_acquire))
     {
         {
@@ -592,31 +665,33 @@ void ContextImpl::backgroundProc()
 }
 
 
-ContextImpl::ContextImpl(ALCcontext *context, DeviceImpl *device)
-  : mContextSetCounter(std::numeric_limits<uint64_t>::max()),
-    mListener(this), mContext(context), mDevice(device),
-    mWakeInterval(std::chrono::milliseconds::zero()), mQuitThread(false),
-    mRefs(0), mIsConnected(true), mIsBatching(false),
-    alGetSourcei64vSOFT(0), alGetSourcedvSOFT(0),
-    alGenEffects(0), alDeleteEffects(0), alIsEffect(0),
-    alEffecti(0), alEffectiv(0), alEffectf(0), alEffectfv(0),
-    alGetEffecti(0), alGetEffectiv(0), alGetEffectf(0), alGetEffectfv(0),
-    alGenFilters(0), alDeleteFilters(0), alIsFilter(0),
-    alFilteri(0), alFilteriv(0), alFilterf(0), alFilterfv(0),
-    alGetFilteri(0), alGetFilteriv(0), alGetFilterf(0), alGetFilterfv(0),
-    alGenAuxiliaryEffectSlots(0), alDeleteAuxiliaryEffectSlots(0), alIsAuxiliaryEffectSlot(0),
-    alAuxiliaryEffectSloti(0), alAuxiliaryEffectSlotiv(0), alAuxiliaryEffectSlotf(0), alAuxiliaryEffectSlotfv(0),
-    alGetAuxiliaryEffectSloti(0), alGetAuxiliaryEffectSlotiv(0), alGetAuxiliaryEffectSlotf(0), alGetAuxiliaryEffectSlotfv(0)
+ContextImpl::ContextImpl(DeviceImpl &device, ArrayView<AttributePair> attrs)
+  : mListener(this), mDevice(device), mIsConnected(true), mIsBatching(false)
 {
-    mHasExt.clear();
+    ALCdevice *alcdev = mDevice.getALCdevice();
+    if(attrs.empty()) /* No explicit attributes. */
+        mContext = alcCreateContext(alcdev, nullptr);
+    else
+        mContext = alcCreateContext(alcdev, &std::get<0>(attrs.front()));
+    if(!mContext) throw alc_error(alcGetError(alcdev), "alcCreateContext failed");
+
     mSourceIds.reserve(256);
-    mPendingHead = new PendingPromise;
+    mPendingHead = new PendingPromise{nullptr, {}, AL_NONE, 0, {}, {nullptr}};
     mPendingCurrent.store(mPendingHead, std::memory_order_relaxed);
     mPendingTail = mPendingHead;
 }
 
 ContextImpl::~ContextImpl()
 {
+    if(mThread.joinable())
+    {
+        std::unique_lock<std::mutex> lock(mWakeMutex);
+        mQuitThread.store(true, std::memory_order_relaxed);
+        lock.unlock();
+        mWakeThread.notify_all();
+        mThread.join();
+    }
+
     PendingPromise *pb = mPendingTail;
     while(pb)
     {
@@ -627,6 +702,25 @@ ContextImpl::~ContextImpl()
     mPendingCurrent.store(nullptr, std::memory_order_relaxed);
     mPendingHead = nullptr;
     mPendingTail = nullptr;
+
+    mEffectSlots.clear();
+    mEffects.clear();
+
+    if(mContext)
+        alcDestroyContext(mContext);
+    mContext = nullptr;
+
+    std::lock_guard<std::mutex> ctxlock(gGlobalCtxMutex);
+    if(sCurrentCtx == this)
+    {
+        sCurrentCtx = nullptr;
+        sContextSetCount.fetch_add(1, std::memory_order_release);
+    }
+    if(sThreadCurrentCtx == this)
+    {
+        sThreadCurrentCtx = nullptr;
+        sContextSetCount.fetch_add(1, std::memory_order_release);
+    }
 }
 
 
@@ -655,7 +749,7 @@ void ContextImpl::destroy()
     alcDestroyContext(mContext);
     mContext = nullptr;
 
-    mDevice->removeContext(this);
+    mDevice.removeContext(this);
 }
 
 
@@ -677,7 +771,7 @@ void ContextImpl::endBatch()
 DECL_THUNK1(SharedPtr<MessageHandler>, Context, setMessageHandler,, SharedPtr<MessageHandler>)
 SharedPtr<MessageHandler> ContextImpl::setMessageHandler(SharedPtr<MessageHandler>&& handler)
 {
-    std::lock_guard<std::mutex> lock(mGlobalCtxMutex);
+    std::lock_guard<std::mutex> lock(gGlobalCtxMutex);
     mMessage.swap(handler);
     return handler;
 }
@@ -696,24 +790,22 @@ void ContextImpl::setAsyncWakeInterval(std::chrono::milliseconds interval)
 
 DecoderOrExceptT ContextImpl::findDecoder(StringView name)
 {
-    DecoderOrExceptT ret;
-
     String oldname = String(name);
     auto file = FileIOFactory::get().openFile(oldname);
-    if(file) return (ret = GetDecoder(std::move(file)));
-
-    // Resource not found. Try to find a substitute.
-    if(!mMessage.get())
-        return (ret = std::make_exception_ptr(std::runtime_error("Failed to open file")));
-    do {
-        String newname(mMessage->resourceNotFound(oldname));
-        if(newname.empty())
-            return (ret = std::make_exception_ptr(std::runtime_error("Failed to open file")));
-        file = FileIOFactory::get().openFile(newname);
-        oldname = std::move(newname);
-    } while(!file);
-
-    return (ret = GetDecoder(std::move(file)));
+    if(UNLIKELY(!file))
+    {
+        // Resource not found. Try to find a substitute.
+        if(!mMessage.get())
+            return std::make_exception_ptr(std::runtime_error("Failed to open file"));
+        do {
+            String newname(mMessage->resourceNotFound(oldname));
+            if(newname.empty())
+                return std::make_exception_ptr(std::runtime_error("Failed to open file"));
+            file = FileIOFactory::get().openFile(newname);
+            oldname = std::move(newname);
+        } while(!file);
+    }
+    return GetDecoder(std::move(file));
 }
 
 DECL_THUNK1(SharedPtr<Decoder>, Context, createDecoder,, StringView)
@@ -722,7 +814,7 @@ SharedPtr<Decoder> ContextImpl::createDecoder(StringView name)
     CheckContext(this);
     DecoderOrExceptT dec = findDecoder(name);
     if(SharedPtr<Decoder> *decoder = std::get_if<SharedPtr<Decoder>>(&dec))
-        return *decoder;
+        return std::move(*decoder);
     std::rethrow_exception(std::get<std::exception_ptr>(dec));
 }
 
@@ -763,16 +855,17 @@ ALsizei ContextImpl::getDefaultResamplerIndex() const
 
 BufferOrExceptT ContextImpl::doCreateBuffer(StringView name, Vector<UniquePtr<BufferImpl>>::iterator iter, SharedPtr<Decoder> decoder)
 {
-    BufferOrExceptT retval;
     ALuint srate = decoder->getFrequency();
     ChannelConfig chans = decoder->getChannelConfig();
     SampleType type = decoder->getSampleType();
-    ALuint frames = decoder->getLength();
+    ALuint frames = static_cast<ALuint>(
+        std::min<uint64_t>(decoder->getLength(), std::numeric_limits<ALuint>::max())
+    );
 
     Vector<ALbyte> data(FramesToBytes(frames, chans, type));
     frames = decoder->read(data.data(), frames);
     if(!frames)
-        return (retval = std::make_exception_ptr(std::runtime_error("No samples for buffer")));
+        return std::make_exception_ptr(std::runtime_error("No samples for buffer"));
     data.resize(FramesToBytes(frames, chans, type));
 
     std::pair<uint64_t,uint64_t> loop_pts = decoder->getLoopPoints();
@@ -787,14 +880,11 @@ BufferOrExceptT ContextImpl::doCreateBuffer(StringView name, Vector<UniquePtr<Bu
     // Get the format before calling the bufferLoading message handler, to
     // ensure it's something OpenAL can handle.
     ALenum format = GetFormat(chans, type);
-    if(format == AL_NONE)
+    if(UNLIKELY(format == AL_NONE))
     {
-        String str("Unsupported format (");
-        str += GetSampleTypeName(type);
-        str += ", ";
-        str += GetChannelConfigName(chans);
-        str += ")";
-        return (retval = std::make_exception_ptr(std::runtime_error(str)));
+        auto str = String("Unsupported format (")+GetSampleTypeName(type)+", "+
+                   GetChannelConfigName(chans)+")";
+        return std::make_exception_ptr(std::runtime_error(str));
     }
 
     if(mMessage.get())
@@ -809,56 +899,56 @@ BufferOrExceptT ContextImpl::doCreateBuffer(StringView name, Vector<UniquePtr<Bu
         ALint pts[2]{(ALint)loop_pts.first, (ALint)loop_pts.second};
         alBufferiv(bid, AL_LOOP_POINTS_SOFT, pts);
     }
-    ALenum err = alGetError();
-    if(err != AL_NO_ERROR)
+    if(ALenum err = alGetError())
     {
         alDeleteBuffers(1, &bid);
-        return (retval = std::make_exception_ptr(al_error(err, "Failed to buffer data")));
+        return std::make_exception_ptr(al_error(err, "Failed to buffer data"));
     }
 
-    return (retval = mBuffers.insert(iter,
-        MakeUnique<BufferImpl>(this, bid, srate, chans, type, name)
-    )->get());
+    return mBuffers.insert(iter,
+        MakeUnique<BufferImpl>(*this, bid, srate, chans, type, name)
+    )->get();
 }
 
 BufferOrExceptT ContextImpl::doCreateBufferAsync(StringView name, Vector<UniquePtr<BufferImpl>>::iterator iter, SharedPtr<Decoder> decoder, Promise<Buffer> promise)
 {
-    BufferOrExceptT retval;
     ALuint srate = decoder->getFrequency();
     ChannelConfig chans = decoder->getChannelConfig();
     SampleType type = decoder->getSampleType();
-    ALuint frames = decoder->getLength();
+    ALuint frames = static_cast<ALuint>(
+        std::min<uint64_t>(decoder->getLength(), std::numeric_limits<ALuint>::max())
+    );
     if(!frames)
-        return (retval = std::make_exception_ptr(std::runtime_error("No samples for buffer")));
+        return std::make_exception_ptr(std::runtime_error("No samples for buffer"));
 
     ALenum format = GetFormat(chans, type);
-    if(format == AL_NONE)
+    if(UNLIKELY(format == AL_NONE))
     {
-        std::stringstream sstr;
-        sstr<< "Format not supported ("<<GetSampleTypeName(type)<<", "<<GetChannelConfigName(chans)<<")";
-        return (retval = std::make_exception_ptr(std::runtime_error(sstr.str())));
+        auto str = String("Unsupported format (")+GetSampleTypeName(type)+", "+
+                   GetChannelConfigName(chans)+")";
+        return std::make_exception_ptr(std::runtime_error(str));
     }
 
     alGetError();
     ALuint bid = 0;
     alGenBuffers(1, &bid);
-    ALenum err = alGetError();
-    if(err != AL_NO_ERROR)
-        return (retval = std::make_exception_ptr(al_error(err, "Failed to create buffer")));
+    if(ALenum err = alGetError())
+        return std::make_exception_ptr(al_error(err, "Failed to create buffer"));
 
-    auto buffer = MakeUnique<BufferImpl>(this, bid, srate, chans, type, name);
+    auto buffer = MakeUnique<BufferImpl>(*this, bid, srate, chans, type, name);
 
     if(mThread.get_id() == std::thread::id())
         mThread = std::thread(std::mem_fn(&ContextImpl::backgroundProc), this);
 
     PendingPromise *pf = nullptr;
     if(mPendingTail == mPendingCurrent.load(std::memory_order_acquire))
-        pf = new PendingPromise{buffer.get(), decoder, format, frames, std::move(promise)};
+        pf = new PendingPromise{buffer.get(), std::move(decoder), format, frames,
+                                std::move(promise), {nullptr}};
     else
     {
         pf = mPendingTail;
         pf->mBuffer = buffer.get();
-        pf->mDecoder = decoder;
+        pf->mDecoder = std::move(decoder);
         pf->mFormat = format;
         pf->mFrames = frames;
         pf->mPromise = std::move(promise);
@@ -868,7 +958,7 @@ BufferOrExceptT ContextImpl::doCreateBufferAsync(StringView name, Vector<UniqueP
     mPendingHead->mNext.store(pf, std::memory_order_release);
     mPendingHead = pf;
 
-    return (retval = mBuffers.insert(iter, std::move(buffer))->get());
+    return mBuffers.insert(iter, std::move(buffer))->get();
 }
 
 DECL_THUNK1(Buffer, Context, getBuffer,, StringView)
@@ -896,7 +986,7 @@ Buffer ContextImpl::getBuffer(StringView name)
         mFutureBuffers.erase(
             std::remove_if(mFutureBuffers.begin(), mFutureBuffers.end(),
                 [](const PendingBuffer &entry) -> bool
-                { return entry.mFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; }
+                { return GetFutureState(entry.mFuture) == std::future_status::ready; }
             ), mFutureBuffers.end()
         );
 
@@ -935,7 +1025,7 @@ SharedFuture<Buffer> ContextImpl::getBufferAsync(StringView name)
         if(iter != mFutureBuffers.end() && iter->mBuffer->getName() == name)
         {
             future = iter->mFuture;
-            if(future.wait_for(std::chrono::milliseconds::zero()) == std::future_status::ready)
+            if(GetFutureState(future) == std::future_status::ready)
                 mFutureBuffers.erase(iter);
             return future;
         }
@@ -944,7 +1034,7 @@ SharedFuture<Buffer> ContextImpl::getBufferAsync(StringView name)
         mFutureBuffers.erase(
             std::remove_if(mFutureBuffers.begin(), mFutureBuffers.end(),
                 [](const PendingBuffer &entry) -> bool
-                { return entry.mFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; }
+                { return GetFutureState(entry.mFuture) == std::future_status::ready; }
             ), mFutureBuffers.end()
         );
     }
@@ -995,7 +1085,7 @@ void ContextImpl::precacheBuffersAsync(ArrayView<StringView> names)
         mFutureBuffers.erase(
             std::remove_if(mFutureBuffers.begin(), mFutureBuffers.end(),
                 [](const PendingBuffer &entry) -> bool
-                { return entry.mFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; }
+                { return GetFutureState(entry.mFuture) == std::future_status::ready; }
             ), mFutureBuffers.end()
         );
     }
@@ -1066,7 +1156,7 @@ SharedFuture<Buffer> ContextImpl::createBufferAsyncFrom(StringView name, SharedP
         mFutureBuffers.erase(
             std::remove_if(mFutureBuffers.begin(), mFutureBuffers.end(),
                 [](const PendingBuffer &entry) -> bool
-                { return entry.mFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; }
+                { return GetFutureState(entry.mFuture) == std::future_status::ready; }
             ), mFutureBuffers.end()
         );
     }
@@ -1124,7 +1214,7 @@ Buffer ContextImpl::findBuffer(StringView name)
         mFutureBuffers.erase(
             std::remove_if(mFutureBuffers.begin(), mFutureBuffers.end(),
                 [](const PendingBuffer &entry) -> bool
-                { return entry.mFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; }
+                { return GetFutureState(entry.mFuture) == std::future_status::ready; }
             ), mFutureBuffers.end()
         );
     }
@@ -1158,7 +1248,7 @@ SharedFuture<Buffer> ContextImpl::findBufferAsync(StringView name)
         if(iter != mFutureBuffers.end() && iter->mBuffer->getName() == name)
         {
             future = iter->mFuture;
-            if(future.wait_for(std::chrono::milliseconds::zero()) == std::future_status::ready)
+            if(GetFutureState(future) == std::future_status::ready)
                 mFutureBuffers.erase(iter);
             return future;
         }
@@ -1167,7 +1257,7 @@ SharedFuture<Buffer> ContextImpl::findBufferAsync(StringView name)
         mFutureBuffers.erase(
             std::remove_if(mFutureBuffers.begin(), mFutureBuffers.end(),
                 [](const PendingBuffer &entry) -> bool
-                { return entry.mFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; }
+                { return GetFutureState(entry.mFuture) == std::future_status::ready; }
             ), mFutureBuffers.end()
         );
     }
@@ -1214,7 +1304,7 @@ void ContextImpl::removeBuffer(StringView name)
         mFutureBuffers.erase(
             std::remove_if(mFutureBuffers.begin(), mFutureBuffers.end(),
                 [](const PendingBuffer &entry) -> bool
-                { return entry.mFuture.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready; }
+                { return GetFutureState(entry.mFuture) == std::future_status::ready; }
             ), mFutureBuffers.end()
         );
     }
@@ -1230,7 +1320,7 @@ void ContextImpl::removeBuffer(StringView name)
             std::remove_if(mPendingSources.begin(), mPendingSources.end(),
                 [iter](PendingSource &entry) -> bool
                 {
-                    return (entry.mFuture.wait_for(std::chrono::milliseconds::zero()) == std::future_status::ready &&
+                    return (GetFutureState(entry.mFuture) == std::future_status::ready &&
                             entry.mFuture.get().getHandle() == iter->get());
                 }
             ), mPendingSources.end()
@@ -1291,7 +1381,7 @@ Source ContextImpl::createSource()
     }
     else
     {
-        mAllSources.emplace_back(this);
+        mAllSources.emplace_back(*this);
         source = &mAllSources.back();
     }
     return Source(source);
@@ -1416,23 +1506,23 @@ void ContextImpl::removeStreamNoLock(SourceImpl *source)
 DECL_THUNK0(AuxiliaryEffectSlot, Context, createAuxiliaryEffectSlot,)
 AuxiliaryEffectSlot ContextImpl::createAuxiliaryEffectSlot()
 {
-    if(!hasExtension(AL::EXT_EFX) || !alGenAuxiliaryEffectSlots)
+    if(!hasExtension(AL::EXT_EFX))
         throw std::runtime_error("AuxiliaryEffectSlots not supported");
     CheckContext(this);
 
-    alGetError();
-    ALuint id = 0;
-    alGenAuxiliaryEffectSlots(1, &id);
-    ALenum err = alGetError();
-    if(err != AL_NO_ERROR)
-        throw al_error(err, "Failed to create AuxiliaryEffectSlot");
-    try {
-        return AuxiliaryEffectSlot(new AuxiliaryEffectSlotImpl(this, id));
-    }
-    catch(...) {
-        alDeleteAuxiliaryEffectSlots(1, &id);
-        throw;
-    }
+    auto slot = MakeUnique<AuxiliaryEffectSlotImpl>(*this);
+    auto iter = std::lower_bound(mEffectSlots.begin(), mEffectSlots.end(), slot);
+    return AuxiliaryEffectSlot(mEffectSlots.insert(iter, std::move(slot))->get());
+}
+
+void ContextImpl::freeEffectSlot(AuxiliaryEffectSlotImpl *slot)
+{
+    auto iter = std::lower_bound(mEffectSlots.begin(), mEffectSlots.end(), slot,
+        [](const UniquePtr<AuxiliaryEffectSlotImpl> &lhs, AuxiliaryEffectSlotImpl *rhs) -> bool
+        { return lhs.get() < rhs; }
+    );
+    if(iter != mEffectSlots.end() && iter->get() == slot)
+        mEffectSlots.erase(iter);
 }
 
 
@@ -1443,55 +1533,37 @@ Effect ContextImpl::createEffect()
         throw std::runtime_error("Effects not supported");
     CheckContext(this);
 
-    alGetError();
-    ALuint id = 0;
-    alGenEffects(1, &id);
-    ALenum err = alGetError();
-    if(err != AL_NO_ERROR)
-        throw al_error(err, "Failed to create Effect");
-    try {
-        return Effect(new EffectImpl(this, id));
-    }
-    catch(...) {
-        alDeleteEffects(1, &id);
-        throw;
-    }
+    auto effect = MakeUnique<EffectImpl>(*this);
+    auto iter = std::lower_bound(mEffects.begin(), mEffects.end(), effect);
+    return Effect(mEffects.insert(iter, std::move(effect))->get());
+}
+
+void ContextImpl::freeEffect(EffectImpl *effect)
+{
+    auto iter = std::lower_bound(mEffects.begin(), mEffects.end(), effect,
+        [](const UniquePtr<EffectImpl> &lhs, EffectImpl *rhs) -> bool
+        { return lhs.get() < rhs; }
+    );
+    if(iter != mEffects.end() && iter->get() == effect)
+        mEffects.erase(iter);
 }
 
 
-DECL_THUNK1(SourceGroup, Context, getSourceGroup,, StringView)
-SourceGroup ContextImpl::getSourceGroup(StringView name)
+DECL_THUNK0(SourceGroup, Context, createSourceGroup,)
+SourceGroup ContextImpl::createSourceGroup()
 {
-    auto hasher = std::hash<StringView>();
-    auto iter = std::lower_bound(mSourceGroups.begin(), mSourceGroups.end(), hasher(name),
-        [hasher](const UniquePtr<SourceGroupImpl> &lhs, size_t rhs) -> bool
-        { return hasher(lhs->getName()) < rhs; }
-    );
-    if(iter != mSourceGroups.end() && (*iter)->getName() == name)
-        return SourceGroup(iter->get());
-    iter = mSourceGroups.insert(iter, MakeUnique<SourceGroupImpl>(this, name));
-    return SourceGroup(iter->get());
-}
+    auto srcgroup = MakeUnique<SourceGroupImpl>(*this);
+    auto iter = std::lower_bound(mSourceGroups.begin(), mSourceGroups.end(), srcgroup);
 
-DECL_THUNK1(SourceGroup, Context, findSourceGroup,, StringView)
-SourceGroup ContextImpl::findSourceGroup(StringView name)
-{
-    auto hasher = std::hash<StringView>();
-    auto iter = std::lower_bound(mSourceGroups.begin(), mSourceGroups.end(), hasher(name),
-        [hasher](const UniquePtr<SourceGroupImpl> &lhs, size_t rhs) -> bool
-        { return hasher(lhs->getName()) < rhs; }
-    );
-    if(iter == mSourceGroups.end() || (*iter)->getName() != name)
-        throw std::runtime_error("Source group not found");
+    iter = mSourceGroups.insert(iter, std::move(srcgroup));
     return SourceGroup(iter->get());
 }
 
 void ContextImpl::freeSourceGroup(SourceGroupImpl *group)
 {
-    auto hasher = std::hash<StringView>();
-    auto iter = std::lower_bound(mSourceGroups.begin(), mSourceGroups.end(), hasher(group->getName()),
-        [hasher](const UniquePtr<SourceGroupImpl> &lhs, size_t rhs) -> bool
-        { return hasher(lhs->getName()) < rhs; }
+    auto iter = std::lower_bound(mSourceGroups.begin(), mSourceGroups.end(), group,
+        [](const UniquePtr<SourceGroupImpl> &lhs, SourceGroupImpl *rhs) -> bool
+        { return lhs.get() < rhs; }
     );
     if(iter != mSourceGroups.end() && iter->get() == group)
         mSourceGroups.erase(iter);
@@ -1538,7 +1610,7 @@ void ContextImpl::update()
     );
     if(!mFadingSources.empty())
     {
-        auto cur_time = std::chrono::steady_clock::now();
+        auto cur_time = std::chrono::steady_clock::now().time_since_epoch();
         mFadingSources.erase(
             std::remove_if(mFadingSources.begin(), mFadingSources.end(),
                 [cur_time](SourceImpl *source) -> bool
@@ -1570,9 +1642,9 @@ void ContextImpl::update()
     if(hasExtension(AL::EXT_disconnect) && mIsConnected)
     {
         ALCint connected;
-        alcGetIntegerv(mDevice->getALCdevice(), ALC_CONNECTED, 1, &connected);
-        mIsConnected = connected;
-        if(!connected && mMessage.get()) mMessage->deviceDisconnected(Device(mDevice));
+        alcGetIntegerv(mDevice.getALCdevice(), ALC_CONNECTED, 1, &connected);
+        mIsConnected = static_cast<bool>(connected);
+        if(!mIsConnected && mMessage.get()) mMessage->deviceDisconnected(Device(&mDevice));
     }
 }
 
@@ -1615,11 +1687,11 @@ void ListenerImpl::set3DParameters(const Vector3 &position, const Vector3 &veloc
     alListenerfv(AL_ORIENTATION, orientation.first.getPtr());
 }
 
-DECL_THUNK3(void, Listener, setPosition,, ALfloat, ALfloat, ALfloat)
-void ListenerImpl::setPosition(ALfloat x, ALfloat y, ALfloat z)
+DECL_THUNK1(void, Listener, setPosition,, const Vector3&)
+void ListenerImpl::setPosition(const Vector3 &position)
 {
     CheckContext(mContext);
-    alListener3f(AL_POSITION, x, y, z);
+    alListenerfv(AL_POSITION, position.getPtr());
 }
 
 DECL_THUNK1(void, Listener, setPosition,, const ALfloat*)
@@ -1629,11 +1701,11 @@ void ListenerImpl::setPosition(const ALfloat *pos)
     alListenerfv(AL_POSITION, pos);
 }
 
-DECL_THUNK3(void, Listener, setVelocity,, ALfloat, ALfloat, ALfloat)
-void ListenerImpl::setVelocity(ALfloat x, ALfloat y, ALfloat z)
+DECL_THUNK1(void, Listener, setVelocity,, const Vector3&)
+void ListenerImpl::setVelocity(const Vector3 &velocity)
 {
     CheckContext(mContext);
-    alListener3f(AL_VELOCITY, x, y, z);
+    alListenerfv(AL_VELOCITY, velocity.getPtr());
 }
 
 DECL_THUNK1(void, Listener, setVelocity,, const ALfloat*)
@@ -1643,12 +1715,11 @@ void ListenerImpl::setVelocity(const ALfloat *vel)
     alListenerfv(AL_VELOCITY, vel);
 }
 
-DECL_THUNK6(void, Listener, setOrientation,, ALfloat, ALfloat, ALfloat, ALfloat, ALfloat, ALfloat)
-void ListenerImpl::setOrientation(ALfloat x1, ALfloat y1, ALfloat z1, ALfloat x2, ALfloat y2, ALfloat z2)
+DECL_THUNK1(void, Listener, setOrientation,, const Vector3Pair&)
+void ListenerImpl::setOrientation(const std::pair<Vector3,Vector3> &orientation)
 {
     CheckContext(mContext);
-    ALfloat ori[6] = { x1, y1, z1, x2, y2, z2 };
-    alListenerfv(AL_ORIENTATION, ori);
+    alListenerfv(AL_ORIENTATION, orientation.first.getPtr());
 }
 
 DECL_THUNK2(void, Listener, setOrientation,, const ALfloat*, const ALfloat*)

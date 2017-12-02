@@ -9,11 +9,6 @@
 #include <stack>
 #include <queue>
 #include <set>
-#if __cplusplus >= 201703L
-#include <variant>
-#else
-#include "mpark/variant.hpp"
-#endif
 
 #include "main.h"
 
@@ -22,15 +17,6 @@
 
 
 #define F_PI (3.14159265358979323846f)
-
-#if !(__cplusplus >= 201703L)
-namespace std {
-using mpark::variant;
-using mpark::get;
-using mpark::get_if;
-using mpark::holds_alternative;
-} // namespace std
-#endif
 
 namespace alure {
 
@@ -88,13 +74,13 @@ public:
 
     void set3DParameters(const Vector3 &position, const Vector3 &velocity, const std::pair<Vector3,Vector3> &orientation);
 
-    void setPosition(ALfloat x, ALfloat y, ALfloat z);
+    void setPosition(const Vector3 &position);
     void setPosition(const ALfloat *pos);
 
-    void setVelocity(ALfloat x, ALfloat y, ALfloat z);
+    void setVelocity(const Vector3 &velocity);
     void setVelocity(const ALfloat *vel);
 
-    void setOrientation(ALfloat x1, ALfloat y1, ALfloat z1, ALfloat x2, ALfloat y2, ALfloat z2);
+    void setOrientation(const std::pair<Vector3,Vector3> &orientation);
     void setOrientation(const ALfloat *at, const ALfloat *up);
     void setOrientation(const ALfloat *ori);
 
@@ -121,20 +107,22 @@ public:
     static ContextImpl *GetThreadCurrent() { return sThreadCurrentCtx; }
 
     static std::atomic<uint64_t> sContextSetCount;
-    mutable uint64_t mContextSetCounter;
+    mutable uint64_t mContextSetCounter{std::numeric_limits<uint64_t>::max()};
 
 private:
     ListenerImpl mListener;
-    ALCcontext *mContext;
+    ALCcontext *mContext{nullptr};
     Vector<ALuint> mSourceIds;
 
     struct PendingBuffer { BufferImpl *mBuffer;  SharedFuture<Buffer> mFuture; };
     struct PendingSource { SourceImpl *mSource;  SharedFuture<Buffer> mFuture; };
 
-    DeviceImpl *const mDevice;
+    DeviceImpl &mDevice;
     Vector<PendingBuffer> mFutureBuffers;
     Vector<UniquePtr<BufferImpl>> mBuffers;
     Vector<UniquePtr<SourceGroupImpl>> mSourceGroups;
+    Vector<UniquePtr<AuxiliaryEffectSlotImpl>> mEffectSlots;
+    Vector<UniquePtr<EffectImpl>> mEffects;
     std::deque<SourceImpl> mAllSources;
     Vector<SourceImpl*> mFreeSources;
 
@@ -146,37 +134,30 @@ private:
     Vector<SourceImpl*> mStreamingSources;
     std::mutex mSourceStreamMutex;
 
-    std::atomic<std::chrono::milliseconds> mWakeInterval;
+    std::atomic<std::chrono::milliseconds> mWakeInterval{std::chrono::milliseconds::zero()};
     std::mutex mWakeMutex;
     std::condition_variable mWakeThread;
 
     SharedPtr<MessageHandler> mMessage;
 
     struct PendingPromise {
-        BufferImpl *mBuffer{nullptr};
+        BufferImpl *mBuffer;
         SharedPtr<Decoder> mDecoder;
-        ALenum mFormat{0};
-        ALuint mFrames{0};
+        ALenum mFormat;
+        ALuint mFrames;
         Promise<Buffer> mPromise;
 
-        std::atomic<PendingPromise*> mNext{nullptr};
-
-        PendingPromise() = default;
-        PendingPromise(BufferImpl *buffer, SharedPtr<Decoder> decoder, ALenum format, ALuint frames,
-                       Promise<Buffer> promise)
-          : mBuffer(buffer), mDecoder(std::move(decoder)), mFormat(format), mFrames(frames)
-          , mPromise(std::move(promise)), mNext(nullptr)
-        { }
+        std::atomic<PendingPromise*> mNext;
     };
-    std::atomic<PendingPromise*> mPendingCurrent;
-    PendingPromise *mPendingTail;
-    PendingPromise *mPendingHead;
+    std::atomic<PendingPromise*> mPendingCurrent{nullptr};
+    PendingPromise *mPendingTail{nullptr};
+    PendingPromise *mPendingHead{nullptr};
 
-    std::atomic<bool> mQuitThread;
+    std::atomic<bool> mQuitThread{false};
     std::thread mThread;
     void backgroundProc();
 
-    size_t mRefs;
+    size_t mRefs{0};
 
     Vector<String> mResamplers;
 
@@ -193,7 +174,7 @@ private:
     bool mIsBatching : 1;
 
 public:
-    ContextImpl(ALCcontext *context, DeviceImpl *device);
+    ContextImpl(DeviceImpl &device, ArrayView<AttributePair> attrs);
     ~ContextImpl();
 
     ALCcontext *getALCcontext() const { return mContext; }
@@ -202,45 +183,45 @@ public:
 
     bool hasExtension(AL ext) const { return mHasExt[static_cast<size_t>(ext)]; }
 
-    LPALGETSTRINGISOFT alGetStringiSOFT;
-    LPALGETSOURCEI64VSOFT alGetSourcei64vSOFT;
-    LPALGETSOURCEDVSOFT alGetSourcedvSOFT;
+    LPALGETSTRINGISOFT alGetStringiSOFT{nullptr};
+    LPALGETSOURCEI64VSOFT alGetSourcei64vSOFT{nullptr};
+    LPALGETSOURCEDVSOFT alGetSourcedvSOFT{nullptr};
 
-    LPALGENEFFECTS alGenEffects;
-    LPALDELETEEFFECTS alDeleteEffects;
-    LPALISEFFECT alIsEffect;
-    LPALEFFECTI alEffecti;
-    LPALEFFECTIV alEffectiv;
-    LPALEFFECTF alEffectf;
-    LPALEFFECTFV alEffectfv;
-    LPALGETEFFECTI alGetEffecti;
-    LPALGETEFFECTIV alGetEffectiv;
-    LPALGETEFFECTF alGetEffectf;
-    LPALGETEFFECTFV alGetEffectfv;
+    LPALGENEFFECTS alGenEffects{nullptr};
+    LPALDELETEEFFECTS alDeleteEffects{nullptr};
+    LPALISEFFECT alIsEffect{nullptr};
+    LPALEFFECTI alEffecti{nullptr};
+    LPALEFFECTIV alEffectiv{nullptr};
+    LPALEFFECTF alEffectf{nullptr};
+    LPALEFFECTFV alEffectfv{nullptr};
+    LPALGETEFFECTI alGetEffecti{nullptr};
+    LPALGETEFFECTIV alGetEffectiv{nullptr};
+    LPALGETEFFECTF alGetEffectf{nullptr};
+    LPALGETEFFECTFV alGetEffectfv{nullptr};
 
-    LPALGENFILTERS alGenFilters;
-    LPALDELETEFILTERS alDeleteFilters;
-    LPALISFILTER alIsFilter;
-    LPALFILTERI alFilteri;
-    LPALFILTERIV alFilteriv;
-    LPALFILTERF alFilterf;
-    LPALFILTERFV alFilterfv;
-    LPALGETFILTERI alGetFilteri;
-    LPALGETFILTERIV alGetFilteriv;
-    LPALGETFILTERF alGetFilterf;
-    LPALGETFILTERFV alGetFilterfv;
+    LPALGENFILTERS alGenFilters{nullptr};
+    LPALDELETEFILTERS alDeleteFilters{nullptr};
+    LPALISFILTER alIsFilter{nullptr};
+    LPALFILTERI alFilteri{nullptr};
+    LPALFILTERIV alFilteriv{nullptr};
+    LPALFILTERF alFilterf{nullptr};
+    LPALFILTERFV alFilterfv{nullptr};
+    LPALGETFILTERI alGetFilteri{nullptr};
+    LPALGETFILTERIV alGetFilteriv{nullptr};
+    LPALGETFILTERF alGetFilterf{nullptr};
+    LPALGETFILTERFV alGetFilterfv{nullptr};
 
-    LPALGENAUXILIARYEFFECTSLOTS alGenAuxiliaryEffectSlots;
-    LPALDELETEAUXILIARYEFFECTSLOTS alDeleteAuxiliaryEffectSlots;
-    LPALISAUXILIARYEFFECTSLOT alIsAuxiliaryEffectSlot;
-    LPALAUXILIARYEFFECTSLOTI alAuxiliaryEffectSloti;
-    LPALAUXILIARYEFFECTSLOTIV alAuxiliaryEffectSlotiv;
-    LPALAUXILIARYEFFECTSLOTF alAuxiliaryEffectSlotf;
-    LPALAUXILIARYEFFECTSLOTFV alAuxiliaryEffectSlotfv;
-    LPALGETAUXILIARYEFFECTSLOTI alGetAuxiliaryEffectSloti;
-    LPALGETAUXILIARYEFFECTSLOTIV alGetAuxiliaryEffectSlotiv;
-    LPALGETAUXILIARYEFFECTSLOTF alGetAuxiliaryEffectSlotf;
-    LPALGETAUXILIARYEFFECTSLOTFV alGetAuxiliaryEffectSlotfv;
+    LPALGENAUXILIARYEFFECTSLOTS alGenAuxiliaryEffectSlots{nullptr};
+    LPALDELETEAUXILIARYEFFECTSLOTS alDeleteAuxiliaryEffectSlots{nullptr};
+    LPALISAUXILIARYEFFECTSLOT alIsAuxiliaryEffectSlot{nullptr};
+    LPALAUXILIARYEFFECTSLOTI alAuxiliaryEffectSloti{nullptr};
+    LPALAUXILIARYEFFECTSLOTIV alAuxiliaryEffectSlotiv{nullptr};
+    LPALAUXILIARYEFFECTSLOTF alAuxiliaryEffectSlotf{nullptr};
+    LPALAUXILIARYEFFECTSLOTFV alAuxiliaryEffectSlotfv{nullptr};
+    LPALGETAUXILIARYEFFECTSLOTI alGetAuxiliaryEffectSloti{nullptr};
+    LPALGETAUXILIARYEFFECTSLOTIV alGetAuxiliaryEffectSlotiv{nullptr};
+    LPALGETAUXILIARYEFFECTSLOTF alGetAuxiliaryEffectSlotf{nullptr};
+    LPALGETAUXILIARYEFFECTSLOTFV alGetAuxiliaryEffectSlotfv{nullptr};
 
     ALuint getSourceId(ALuint maxprio);
     void insertSourceId(ALuint id) { mSourceIds.push_back(id); }
@@ -260,6 +241,8 @@ public:
 
     void freeSource(SourceImpl *source) { mFreeSources.push_back(source); }
     void freeSourceGroup(SourceGroupImpl *group);
+    void freeEffectSlot(AuxiliaryEffectSlotImpl *slot);
+    void freeEffect(EffectImpl *effect);
 
     Batcher getBatcher()
     {
@@ -276,7 +259,7 @@ public:
     void send(R MessageHandler::* func, Args&&... args)
     { if(mMessage.get()) (mMessage.get()->*func)(std::forward<Args>(args)...); }
 
-    Device getDevice() { return Device(mDevice); }
+    Device getDevice() { return Device(&mDevice); }
 
     void destroy();
 
@@ -314,8 +297,7 @@ public:
 
     Effect createEffect();
 
-    SourceGroup getSourceGroup(StringView name);
-    SourceGroup findSourceGroup(StringView name);
+    SourceGroup createSourceGroup();
 
     void setDopplerFactor(ALfloat factor);
 
@@ -327,20 +309,20 @@ public:
 };
 
 
-inline void CheckContext(const ContextImpl *ctx)
+inline void CheckContext(const ContextImpl &ctx)
 {
     auto count = ContextImpl::sContextSetCount.load(std::memory_order_acquire);
-    if(UNLIKELY(count != ctx->mContextSetCounter))
+    if(UNLIKELY(count != ctx.mContextSetCounter))
     {
-        if(UNLIKELY(ctx != ContextImpl::GetCurrent()))
+        if(UNLIKELY(&ctx != ContextImpl::GetCurrent()))
             throw std::runtime_error("Called context is not current");
-        ctx->mContextSetCounter = count;
+        ctx.mContextSetCounter = count;
     }
 }
 
-inline void CheckContexts(const ContextImpl *ctx0, const ContextImpl *ctx1)
+inline void CheckContexts(const ContextImpl &ctx0, const ContextImpl &ctx1)
 {
-    if(UNLIKELY(ctx0 != ctx1))
+    if(UNLIKELY(&ctx0 != &ctx1))
         throw std::runtime_error("Mismatched object contexts");
 }
 

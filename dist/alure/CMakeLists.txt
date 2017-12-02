@@ -16,30 +16,31 @@ include(CheckCXXSourceCompiles)
 
 find_package(OpenAL REQUIRED)
 
-option(ALURE_STATIC_GCCRT "Static-link libgcc and libstdc++ runtimes" OFF)
-
 set(CXX_FLAGS )
-check_cxx_compiler_flag(-std=c++11 HAVE_STD_CXX11)
-if(HAVE_STD_CXX11)
-    set(CXX_FLAGS -std=c++11 ${CXX_FLAGS})
-endif()
 
-check_cxx_compiler_flag(-Wall HAVE_WALL_SWITCH)
-if(HAVE_WALL_SWITCH)
-    set(CXX_FLAGS ${CXX_FLAGS} -Wall)
-endif()
-check_cxx_compiler_flag(-Wextra HAVE_WEXTRA_SWITCH)
-if(HAVE_WEXTRA_SWITCH)
-    set(CXX_FLAGS ${CXX_FLAGS} -Wextra)
-endif()
-
-check_cxx_compiler_flag(-fno-rtti HAVE_NO_RTTI_SWITCH)
-if(HAVE_NO_RTTI_SWITCH)
-    set(CXX_FLAGS ${CXX_FLAGS} -fno-rtti)
-else()
+if(MSVC)
     check_cxx_compiler_flag(/GR- HAVE_GRX_SWITCH)
     if(HAVE_GRX_SWITCH)
         set(CXX_FLAGS ${CXX_FLAGS} /GR-)
+    endif()
+else()
+    check_cxx_compiler_flag(-std=c++11 HAVE_STD_CXX11)
+    if(HAVE_STD_CXX11)
+        set(CXX_FLAGS -std=c++11 ${CXX_FLAGS})
+    endif()
+
+    check_cxx_compiler_flag(-Wall HAVE_WALL_SWITCH)
+    if(HAVE_WALL_SWITCH)
+        set(CXX_FLAGS ${CXX_FLAGS} -Wall)
+    endif()
+    check_cxx_compiler_flag(-Wextra HAVE_WEXTRA_SWITCH)
+    if(HAVE_WEXTRA_SWITCH)
+        set(CXX_FLAGS ${CXX_FLAGS} -Wextra)
+    endif()
+
+    check_cxx_compiler_flag(-fno-rtti HAVE_NO_RTTI_SWITCH)
+    if(HAVE_NO_RTTI_SWITCH)
+        set(CXX_FLAGS ${CXX_FLAGS} -fno-rtti)
     endif()
 endif()
 
@@ -70,23 +71,30 @@ endif()
 
 
 set(LINKER_OPTS )
-if(ALURE_STATIC_GCCRT)
-    set(OLD_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES})
-    set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} -static-libgcc -static-libstdc++)
-    check_cxx_source_compiles(
+if(MSVC)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /SAFESEH:NO")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /SAFESEH:NO")
+    set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} /SAFESEH:NO")
+else()
+    option(ALURE_STATIC_GCCRT "Static-link libgcc and libstdc++ runtimes" OFF)
+    if(ALURE_STATIC_GCCRT)
+        set(OLD_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES})
+        set(CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES} -static-libgcc -static-libstdc++)
+        check_cxx_source_compiles(
 "#include <vector>
 int main()
 {
     std::vector<int> test;
     return test.size();
 }"
-        HAVE_STATIC_GCCRT_SWITCHES
-    )
-    if(HAVE_STATIC_GCCRT_SWITCHES)
-        set(LINKER_OPTS ${LINKER_OPTS} -static-libgcc -static-libstdc++)
+            HAVE_STATIC_GCCRT_SWITCHES
+        )
+        if(HAVE_STATIC_GCCRT_SWITCHES)
+            set(LINKER_OPTS ${LINKER_OPTS} -static-libgcc -static-libstdc++)
+        endif()
+        set(CMAKE_REQUIRED_LIBRARIES ${OLD_REQUIRED_LIBRARIES})
+        unset(OLD_REQUIRED_LIBRARIES)
     endif()
-    set(CMAKE_REQUIRED_LIBRARIES ${OLD_REQUIRED_LIBRARIES})
-    unset(OLD_REQUIRED_LIBRARIES)
 endif()
 
 
@@ -98,16 +106,34 @@ set(alure_srcs src/devicemanager.cpp
                src/sourcegroup.cpp
                src/auxeffectslot.cpp
                src/effect.cpp
-               src/decoders/wave.cpp
 )
 set(alure_libs ${OPENAL_LIBRARY})
 set(decoder_incls )
+
+unset(HAVE_WAVE)
+unset(HAVE_VORBISFILE)
+unset(HAVE_LIBFLAC)
+unset(HAVE_OPUSFILE)
+unset(HAVE_LIBSNDFILE)
+unset(HAVE_MPG123)
+
+option(ALURE_ENABLE_WAVE    "Enables the built-in wave file decoder"     ON)
+option(ALURE_ENABLE_VORBIS  "Enables the built-in libvorbisfile decoder" ON)
+option(ALURE_ENABLE_FLAC    "Enables the built-in FLAC decoder"          ON)
+option(ALURE_ENABLE_OPUS    "Enables the built-in libopusfile decoder"   ON)
+option(ALURE_ENABLE_SNDFILE "Enables the built-in libsndfile decoder"    ON)
+option(ALURE_ENABLE_MPG123  "Enables the built-in libmpg123 decoder"     ON)
+
+if(ALURE_ENABLE_WAVE)
+    set(alure_srcs ${alure_srcs} src/decoders/wave.cpp)
+    set(HAVE_WAVE 1)
+endif()
 
 find_package(Ogg)
 if(OGG_FOUND)
     set(decoder_incls ${decoder_incls} ${OGG_INCLUDE_DIRS})
     find_package(Vorbis)
-    if(VORBIS_FOUND)
+    if(VORBIS_FOUND AND ALURE_ENABLE_VORBIS)
         set(decoder_incls ${decoder_incls} ${VORBIS_INCLUDE_DIRS})
         set(alure_libs ${alure_libs} ${VORBIS_LIBRARIES})
         set(alure_srcs ${alure_srcs} src/decoders/vorbisfile.cpp)
@@ -115,7 +141,7 @@ if(OGG_FOUND)
     endif()
 
     find_package(FLAC)
-    if(FLAC_FOUND)
+    if(FLAC_FOUND AND ALURE_ENABLE_FLAC)
         set(decoder_incls ${decoder_incls} ${FLAC_INCLUDE_DIRS})
         set(alure_libs ${alure_libs} ${FLAC_LIBRARIES})
         set(alure_srcs ${alure_srcs} src/decoders/flac.cpp)
@@ -123,7 +149,7 @@ if(OGG_FOUND)
     endif()
 
     find_package(Opus)
-    if(OPUS_FOUND)
+    if(OPUS_FOUND AND ALURE_ENABLE_OPUS)
         set(decoder_incls ${decoder_incls} ${OPUS_INCLUDE_DIRS})
         set(alure_libs ${alure_libs} ${OPUS_LIBRARIES})
         set(alure_srcs ${alure_srcs} src/decoders/opusfile.cpp)
@@ -133,7 +159,7 @@ if(OGG_FOUND)
 endif()
 
 find_package(SndFile)
-if(SNDFILE_FOUND)
+if(SNDFILE_FOUND AND ALURE_ENABLE_SNDFILE)
     set(decoder_incls ${decoder_incls} ${SNDFILE_INCLUDE_DIRS})
     set(alure_libs ${alure_libs} ${SNDFILE_LIBRARIES})
     set(alure_srcs ${alure_srcs} src/decoders/sndfile.cpp)
@@ -141,7 +167,7 @@ if(SNDFILE_FOUND)
 endif()
 
 find_package(MPG123)
-if(MPG123_FOUND)
+if(MPG123_FOUND AND ALURE_ENABLE_MPG123)
     set(decoder_incls ${decoder_incls} ${MPG123_INCLUDE_DIRS})
     set(alure_libs ${alure_libs} ${MPG123_LIBRARIES})
     set(alure_srcs ${alure_srcs} src/decoders/mpg123.cpp)
@@ -156,7 +182,8 @@ CONFIGURE_FILE(
 
 add_library(alure2 SHARED ${alure_srcs})
 if(EXPORT_DECL)
-    target_compile_definitions(alure2 PRIVATE ALURE_API=${EXPORT_DECL})
+    target_compile_definitions(alure2 PRIVATE ALURE_API=${EXPORT_DECL} ALURE_TEMPLATE=template
+                                              NOMINMAX)
 endif()
 target_include_directories(alure2
     PUBLIC ${alure_SOURCE_DIR}/include/AL ${OPENAL_INCLUDE_DIR}
@@ -167,7 +194,7 @@ target_compile_options(alure2 PRIVATE ${CXX_FLAGS} ${VISIBILITY_FLAGS})
 target_link_libraries(alure2 PUBLIC ${alure_libs} PRIVATE ${LINKER_OPTS})
 
 add_library(alure2_s STATIC ${alure_srcs})
-target_compile_definitions(alure2_s PUBLIC ALURE_STATIC_LIB)
+target_compile_definitions(alure2_s PUBLIC ALURE_STATIC_LIB PRIVATE NOMINMAX)
 target_include_directories(alure2_s
     PUBLIC ${alure_SOURCE_DIR}/include/AL ${OPENAL_INCLUDE_DIR}
     PRIVATE ${alure_SOURCE_DIR}/include ${alure_SOURCE_DIR}/src ${alure_BINARY_DIR}

@@ -6,19 +6,20 @@
 namespace alure {
 
 class EffectImpl {
-    ContextImpl *const mContext;
-    ALuint mId;
-    ALenum mType;
+    ContextImpl &mContext;
+    ALuint mId{0};
+    ALenum mType{AL_NONE};
 
 public:
-    EffectImpl(ContextImpl *context, ALuint id) : mContext(context), mId(id), mType(AL_NONE)
-    { }
+    EffectImpl(ContextImpl &context);
+    ~EffectImpl();
 
     void setReverbProperties(const EFXEAXREVERBPROPERTIES &props);
+    void setChorusProperties(const EFXCHORUSPROPERTIES &props);
 
     void destroy();
 
-    ContextImpl *getContext() const { return mContext; }
+    ContextImpl &getContext() const { return mContext; }
     ALuint getId() const { return mId; }
 };
 

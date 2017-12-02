@@ -6,6 +6,7 @@
 #include <iostream>
 #include <iomanip>
 #include <cstring>
+#include <cctype>
 #include <thread>
 #include <chrono>
 
@@ -14,7 +15,7 @@
 #include "efx-presets.h"
 
 // Not UTF-8 aware!
-int ci_compare(alure::StringView lhs, alure::StringView rhs)
+static int ci_compare(alure::StringView lhs, alure::StringView rhs)
 {
     using traits = alure::StringView::traits_type;
 
@@ -169,7 +170,7 @@ static const struct ReverbEntry {
 
 int main(int argc, char *argv[])
 {
-    alure::DeviceManager devMgr = alure::DeviceManager::get();
+    alure::DeviceManager devMgr = alure::DeviceManager::getInstance();
 
     int fileidx = 1;
     alure::Device dev;

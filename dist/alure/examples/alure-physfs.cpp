@@ -5,7 +5,6 @@
  */
 
 #include <iostream>
-#include <sstream>
 #include <iomanip>
 #include <cstring>
 #include <limits>
@@ -16,14 +15,12 @@
 
 #include "alure2.h"
 
-namespace
-{
+namespace {
 
 // Inherit from std::streambuf to handle custom I/O (PhysFS for this example)
-class StreamBuf final : public std::streambuf {
-    using BufferArrayT = alure::Array<char_type,4096>;
-    BufferArrayT mBuffer;
-    PHYSFS_File *mFile;
+class PhysFSBuf final : public std::streambuf {
+    alure::Array<char_type,4096> mBuffer;
+    PHYSFS_File *mFile{nullptr};
 
     int_type underflow() override
     {
@@ -55,11 +52,18 @@ class StreamBuf final : public std::streambuf {
                 break;
 
             case std::ios_base::cur:
-                // Need to offset for the read pointers with std::ios_base::cur
-                // regardless
+                // Need to offset for the file offset being at egptr() while
+                // the requested offset is relative to gptr().
                 offset -= off_type(egptr()-gptr());
                 if((fpos=PHYSFS_tell(mFile)) == -1)
                     return traits_type::eof();
+                // If the offset remains in the current buffer range, just
+                // update the pointer.
+                if(offset < 0 && -offset <= off_type(egptr()-eback()))
+                {
+                    setg(eback(), egptr()+offset, egptr());
+                    return fpos + offset;
+                }
                 offset += fpos;
                 break;
 
@@ -72,15 +76,23 @@ class StreamBuf final : public std::streambuf {
             default:
                 return traits_type::eof();
         }
-        // Range check - absolute offsets cannot be less than 0, nor be greater
-        // than PhysFS's offset type.
-        if(offset < 0 || offset >= std::numeric_limits<PHYSFS_sint64>::max())
-            return traits_type::eof();
-        if(PHYSFS_seek(mFile, PHYSFS_sint64(offset)) == 0)
-            return traits_type::eof();
+
+        if(offset < 0) return traits_type::eof();
+        if(PHYSFS_seek(mFile, offset) == 0)
+        {
+            // HACK: Workaround a bug in PhysFS. Certain archive types error
+            // when trying to seek to the end of the file. So if seeking to the
+            // end of the file fails, instead try seeking to the last byte and
+            // read it.
+            if(offset != PHYSFS_fileLength(mFile))
+                return traits_type::eof();
+            if(PHYSFS_seek(mFile, offset-1) == 0)
+                return traits_type::eof();
+            PHYSFS_read(mFile, mBuffer.data(), 1, 1);
+        }
         // Clear read pointers so underflow() gets called on the next read
         // attempt.
-        setg(0, 0, 0);
+        setg(nullptr, nullptr, nullptr);
         return offset;
     }
 
@@ -90,25 +102,22 @@ class StreamBuf final : public std::streambuf {
         if(!mFile || (mode&std::ios_base::out) || !(mode&std::ios_base::in))
             return traits_type::eof();
 
-        if(pos < 0 || pos >= std::numeric_limits<PHYSFS_sint64>::max())
+        if(PHYSFS_seek(mFile, pos) == 0)
             return traits_type::eof();
-        if(PHYSFS_seek(mFile, PHYSFS_sint64(pos)) == 0)
-            return traits_type::eof();
-        setg(0, 0, 0);
+        setg(nullptr, nullptr, nullptr);
         return pos;
     }
 
 public:
-    bool open(const char *filename)
+    bool open(const char *filename) noexcept
     {
         mFile = PHYSFS_openRead(filename);
         if(!mFile) return false;
         return true;
     }
 
-    StreamBuf() : mFile(nullptr)
-    { }
-    ~StreamBuf() override
+    PhysFSBuf() = default;
+    ~PhysFSBuf() override
     {
         PHYSFS_close(mFile);
         mFile = nullptr;
@@ -117,15 +126,16 @@ public:
 
 // Inherit from std::istream to use our custom streambuf
 class Stream final : public std::istream {
+    PhysFSBuf mStreamBuf;
+
 public:
-    Stream(const char *filename) : std::istream(new StreamBuf())
+    Stream(const char *filename) : std::istream(nullptr)
     {
+        init(&mStreamBuf);
+
         // Set the failbit if the file failed to open.
-        if(!(static_cast<StreamBuf*>(rdbuf())->open(filename)))
-            clear(failbit);
+        if(!mStreamBuf.open(filename)) clear(failbit);
     }
-    ~Stream() override
-    { delete rdbuf(); }
 };
 
 // Inherit from alure::FileIOFactory to use our custom istream
@@ -135,11 +145,8 @@ public:
     {
         // Need to initialize PhysFS before using it
         if(PHYSFS_init(argv0) == 0)
-        {
-            std::stringstream sstr;
-            sstr<< "Failed to initialize PhysFS: "<<PHYSFS_getLastError();
-            throw std::runtime_error(sstr.str());
-        }
+            throw std::runtime_error(alure::String("Failed to initialize PhysFS: ") +
+                                     PHYSFS_getLastError());
 
         std::cout<< "Initialized PhysFS, supported archive formats:" <<std::endl;
         for(const PHYSFS_ArchiveInfo **i = PHYSFS_supportedArchiveTypes();*i != NULL;i++)
@@ -151,7 +158,7 @@ public:
         PHYSFS_deinit();
     }
 
-    alure::UniquePtr<std::istream> openFile(const alure::String &name) override
+    alure::UniquePtr<std::istream> openFile(const alure::String &name) noexcept override
     {
         auto stream = alure::MakeUnique<Stream>(name.c_str());
         if(stream->fail()) stream = nullptr;
@@ -205,7 +212,7 @@ int main(int argc, char *argv[])
     // Alure will be used with our custom factory.
     alure::FileIOFactory::set(alure::MakeUnique<FileFactory>(argv[0]));
 
-    alure::DeviceManager devMgr = alure::DeviceManager::get();
+    alure::DeviceManager devMgr = alure::DeviceManager::getInstance();
 
     int fileidx = 1;
     alure::Device dev;

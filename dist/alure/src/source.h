@@ -12,13 +12,12 @@ class ALBufferStream;
 
 struct SendProps {
     ALuint mSendIdx;
-    AuxiliaryEffectSlotImpl *mSlot;
-    ALuint mFilter;
+    AuxiliaryEffectSlotImpl *mSlot{nullptr};
+    ALuint mFilter{AL_FILTER_NULL};
 
-    SendProps(ALuint send, AuxiliaryEffectSlotImpl *slot)
-      : mSendIdx(send), mSlot(slot), mFilter(AL_FILTER_NULL)
+    SendProps(ALuint send, AuxiliaryEffectSlotImpl *slot) : mSendIdx(send), mSlot(slot)
     { }
-    SendProps(ALuint send, ALuint filter) : mSendIdx(send), mSlot(0), mFilter(filter)
+    SendProps(ALuint send, ALuint filter) : mSendIdx(send), mFilter(filter)
     { }
     SendProps(ALuint send, AuxiliaryEffectSlotImpl *slot, ALuint filter)
       : mSendIdx(send), mSlot(slot), mFilter(filter)
@@ -26,7 +25,7 @@ struct SendProps {
 };
 
 class SourceImpl {
-    ContextImpl *const mContext;
+    ContextImpl &mContext;
     ALuint mId;
 
     BufferImpl *mBuffer;
@@ -36,8 +35,8 @@ class SourceImpl {
     ALfloat mGroupPitch;
     ALfloat mGroupGain;
 
-    std::chrono::steady_clock::time_point mLastFadeTime;
-    std::chrono::steady_clock::time_point mFadeTimeTarget;
+    std::chrono::nanoseconds mLastFadeTime;
+    std::chrono::nanoseconds mFadeTimeTarget;
     ALfloat mFadeGainTarget;
     ALfloat mFadeGain;
 
@@ -82,13 +81,13 @@ class SourceImpl {
     void setFilterParams(ALuint &filterid, const FilterParams &params);
 
 public:
-    SourceImpl(ContextImpl *context);
+    SourceImpl(ContextImpl &context);
     ~SourceImpl();
 
     ALuint getId() const { return mId; }
 
     bool checkPending(SharedFuture<Buffer> &future);
-    bool fadeUpdate(std::chrono::steady_clock::time_point cur_fade_time);
+    bool fadeUpdate(std::chrono::nanoseconds cur_fade_time);
     bool playUpdate(ALuint id);
     bool playUpdate();
     bool updateAsync();
@@ -98,12 +97,12 @@ public:
 
     void checkPaused();
     void unsetPaused() { mPaused = false; }
-    void makeStopped(bool dolock=true);
 
     void play(Buffer buffer);
     void play(SharedPtr<Decoder>&& decoder, ALuint chunk_len, ALuint queue_size);
     void play(SharedFuture<Buffer>&& future_buffer);
     void stop();
+    void makeStopped(bool dolock=true);
     void fadeOutToStop(ALfloat gain, std::chrono::milliseconds duration);
     void pause();
     void resume();
@@ -142,19 +141,19 @@ public:
     void set3DParameters(const Vector3 &position, const Vector3 &velocity, const Vector3 &direction);
     void set3DParameters(const Vector3 &position, const Vector3 &velocity, const std::pair<Vector3,Vector3> &orientation);
 
-    void setPosition(ALfloat x, ALfloat y, ALfloat z);
+    void setPosition(const Vector3 &position);
     void setPosition(const ALfloat *pos);
     Vector3 getPosition() const { return mPosition; }
 
-    void setVelocity(ALfloat x, ALfloat y, ALfloat z);
+    void setVelocity(const Vector3 &velocity);
     void setVelocity(const ALfloat *vel);
     Vector3 getVelocity() const { return mVelocity; }
 
-    void setDirection(ALfloat x, ALfloat y, ALfloat z);
+    void setDirection(const Vector3 &direction);
     void setDirection(const ALfloat *dir);
     Vector3 getDirection() const { return mDirection; }
 
-    void setOrientation(ALfloat x1, ALfloat y1, ALfloat z1, ALfloat x2, ALfloat y2, ALfloat z2);
+    void setOrientation(const std::pair<Vector3,Vector3> &orientation);
     void setOrientation(const ALfloat *at, const ALfloat *up);
     void setOrientation(const ALfloat *ori);
     std::pair<Vector3,Vector3> getOrientation() const
@@ -218,3 +217,4 @@ struct SourceStreamUpdateEntry {
 } // namespace alure
 
 #endif /* SOURCE_H */
+

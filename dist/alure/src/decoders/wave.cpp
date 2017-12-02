@@ -74,36 +74,37 @@ namespace alure
 class WaveDecoder final : public Decoder {
     UniquePtr<std::istream> mFile;
 
-    ChannelConfig mChannelConfig;
-    SampleType mSampleType;
-    ALuint mFrequency;
-    ALuint mFrameSize;
+    ChannelConfig mChannelConfig{ChannelConfig::Mono};
+    SampleType mSampleType{SampleType::UInt8};
+    ALuint mFrequency{0};
+    ALuint mFrameSize{0};
 
     // In sample frames, relative to sample data start
-    std::pair<ALuint,ALuint> mLoopPts;
+    std::pair<uint64_t,uint64_t> mLoopPts{0, 0};
 
     // In bytes from beginning of file
-    std::istream::pos_type mStart, mEnd;
-    std::istream::pos_type mCurrentPos;
+    std::istream::pos_type mStart{0}, mEnd{0};
+    std::istream::pos_type mCurrentPos{0};
 
 public:
-    WaveDecoder(UniquePtr<std::istream> file, ChannelConfig channels, SampleType type, ALuint frequency, ALuint framesize,
-                std::istream::pos_type start, std::istream::pos_type end, ALuint loopstart, ALuint loopend)
+    WaveDecoder(UniquePtr<std::istream> file, ChannelConfig channels, SampleType type,
+                ALuint frequency, ALuint framesize, std::istream::pos_type start,
+                std::istream::pos_type end, uint64_t loopstart, uint64_t loopend) noexcept
       : mFile(std::move(file)), mChannelConfig(channels), mSampleType(type), mFrequency(frequency)
       , mFrameSize(framesize), mLoopPts{loopstart,loopend}, mStart(start), mEnd(end)
     { mCurrentPos = mFile->tellg(); }
     ~WaveDecoder() override;
 
-    ALuint getFrequency() const override;
-    ChannelConfig getChannelConfig() const override;
-    SampleType getSampleType() const override;
+    ALuint getFrequency() const noexcept override;
+    ChannelConfig getChannelConfig() const noexcept override;
+    SampleType getSampleType() const noexcept override;
 
-    uint64_t getLength() const override;
-    bool seek(uint64_t pos) override;
+    uint64_t getLength() const noexcept override;
+    bool seek(uint64_t pos) noexcept override;
 
-    std::pair<uint64_t,uint64_t> getLoopPoints() const override;
+    std::pair<uint64_t,uint64_t> getLoopPoints() const noexcept override;
 
-    ALuint read(ALvoid *ptr, ALuint count) override;
+    ALuint read(ALvoid *ptr, ALuint count) noexcept override;
 };
 
 WaveDecoder::~WaveDecoder()
@@ -111,28 +112,20 @@ WaveDecoder::~WaveDecoder()
 }
 
 
-ALuint WaveDecoder::getFrequency() const
-{
-    return mFrequency;
-}
+ALuint WaveDecoder::getFrequency() const noexcept
+{ return mFrequency; }
 
-ChannelConfig WaveDecoder::getChannelConfig() const
-{
-    return mChannelConfig;
-}
+ChannelConfig WaveDecoder::getChannelConfig() const noexcept
+{ return mChannelConfig; }
 
-SampleType WaveDecoder::getSampleType() const
-{
-    return mSampleType;
-}
+SampleType WaveDecoder::getSampleType() const noexcept
+{ return mSampleType; }
 
 
-uint64_t WaveDecoder::getLength() const
-{
-    return (mEnd - mStart) / mFrameSize;
-}
+uint64_t WaveDecoder::getLength() const noexcept
+{ return (mEnd - mStart) / mFrameSize; }
 
-bool WaveDecoder::seek(uint64_t pos)
+bool WaveDecoder::seek(uint64_t pos) noexcept
 {
     std::streamsize offset = pos*mFrameSize + mStart;
     mFile->clear();
@@ -142,19 +135,21 @@ bool WaveDecoder::seek(uint64_t pos)
     return true;
 }
 
-std::pair<uint64_t,uint64_t> WaveDecoder::getLoopPoints() const
+std::pair<uint64_t,uint64_t> WaveDecoder::getLoopPoints() const noexcept
 {
     return mLoopPts;
 }
 
-ALuint WaveDecoder::read(ALvoid *ptr, ALuint count)
+ALuint WaveDecoder::read(ALvoid *ptr, ALuint count) noexcept
 {
     mFile->clear();
 
     ALuint total = 0;
     if(mCurrentPos < mEnd)
     {
-        size_t len = std::min<std::istream::pos_type>(count*mFrameSize, mEnd-mCurrentPos);
+        ALuint len = static_cast<ALuint>(
+            std::min<std::istream::pos_type>(count*mFrameSize, mEnd-mCurrentPos)
+        );
 #ifdef __BIG_ENDIAN__
         switch(mSampleType)
         {
@@ -162,12 +157,12 @@ ALuint WaveDecoder::read(ALvoid *ptr, ALuint count)
                 while(total < len && mFile->good() && !mFile->eof())
                 {
                     char temp[256];
-                    size_t todo = std::min(len-total, sizeof(temp));
+                    ALuint todo = std::min<ALuint>(len-total, sizeof(temp));
 
                     mFile->read(temp, todo);
-                    std::streamsize got = mFile->gcount();
+                    ALuint got = static_cast<ALuint>(mFile->gcount());
 
-                    for(std::streamsize i = 0;i < got;++i)
+                    for(ALuint i = 0;i < got;++i)
                         reinterpret_cast<char*>(ptr)[total+i] = temp[i^3];
 
                     mCurrentPos += got;
@@ -180,12 +175,12 @@ ALuint WaveDecoder::read(ALvoid *ptr, ALuint count)
                 while(total < len && mFile->good() && !mFile->eof())
                 {
                     char temp[256];
-                    size_t todo = std::min(len-total, sizeof(temp));
+                    ALuint todo = std::min<ALuint>(len-total, sizeof(temp));
 
                     mFile->read(temp, todo);
-                    std::streamsize got = mFile->gcount();
+                    ALuint got = static_cast<ALuint>(mFile->gcount());
 
-                    for(std::streamsize i = 0;i < got;++i)
+                    for(ALuint i = 0;i < got;++i)
                         reinterpret_cast<char*>(ptr)[total+i] = temp[i^1];
 
                     mCurrentPos += got;
@@ -200,7 +195,7 @@ ALuint WaveDecoder::read(ALvoid *ptr, ALuint count)
         {
 #endif
                 mFile->read(reinterpret_cast<char*>(ptr), len);
-                std::streamsize got = mFile->gcount();
+                ALuint got = static_cast<ALuint>(mFile->gcount());
 
                 mCurrentPos += got;
                 total = got / mFrameSize;
@@ -211,13 +206,13 @@ ALuint WaveDecoder::read(ALvoid *ptr, ALuint count)
 }
 
 
-SharedPtr<Decoder> WaveDecoderFactory::createDecoder(UniquePtr<std::istream> &file)
+SharedPtr<Decoder> WaveDecoderFactory::createDecoder(UniquePtr<std::istream> &file) noexcept
 {
     ChannelConfig channels = ChannelConfig::Mono;
     SampleType type = SampleType::UInt8;
     ALuint frequency = 0;
     ALuint framesize = 0;
-    ALuint loop_pts[2]{0, 0};
+    uint64_t loop_pts[2]{0, 0};
     ALuint blockalign = 0;
     ALuint framealign = 0;
 
@@ -326,7 +321,8 @@ SharedPtr<Decoder> WaveDecoderFactory::createDecoder(UniquePtr<std::istream> &fi
                 char subtype[16];
                 ALushort validbits = read_le16(*file); size -= 2;
                 ALuint chanmask = read_le32(*file); size -= 4;
-                file->read(subtype, 16); size -= file->gcount();
+                file->read(subtype, 16);
+                size -= static_cast<ALuint>(file->gcount());
 
                 /* Padded bit depths not supported */
                 if(validbits != bitdepth)

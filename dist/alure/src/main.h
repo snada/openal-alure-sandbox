@@ -3,8 +3,23 @@
 
 #include "alure2.h"
 
+#if __cplusplus >= 201703L
+#include <variant>
+#else
+#include "mpark/variant.hpp"
+#endif
 #include <system_error>
 
+
+#if !(__cplusplus >= 201703L)
+namespace std {
+using mpark::variant;
+using mpark::monostate;
+using mpark::get;
+using mpark::get_if;
+using mpark::holds_alternative;
+} // namespace std
+#endif
 
 #ifdef __GNUC__
 #define LIKELY(x) __builtin_expect(static_cast<bool>(x), true)
@@ -14,51 +29,51 @@
 #define UNLIKELY(x) static_cast<bool>(x)
 #endif
 
-
-#define DECL_THUNK0(ret, C, Name, cv) \
+#define DECL_THUNK0(ret, C, Name, cv)                                         \
 ret C::Name() cv { return pImpl->Name(); }
 #define DECL_THUNK1(ret, C, Name, cv, T1)                                     \
-ret C::Name(T1 a) cv                                                          \
-{                                                                             \
-    using _t1 = T1;                                                           \
-    return pImpl->Name(std::forward<_t1>(a));                                 \
-}
+ret C::Name(T1 a) cv { return pImpl->Name(std::forward<T1>(a)); }
 #define DECL_THUNK2(ret, C, Name, cv, T1, T2)                                 \
 ret C::Name(T1 a, T2 b) cv                                                    \
-{                                                                             \
-    using _t1 = T1; using _t2 = T2;                                           \
-    return pImpl->Name(std::forward<_t1>(a), std::forward<_t2>(b));           \
-}
+{ return pImpl->Name(std::forward<T1>(a), std::forward<T2>(b)); }
 #define DECL_THUNK3(ret, C, Name, cv, T1, T2, T3)                             \
 ret C::Name(T1 a, T2 b, T3 c) cv                                              \
 {                                                                             \
-    using _t1 = T1; using _t2 = T2; using _t3 = T3;                           \
-    return pImpl->Name(std::forward<_t1>(a), std::forward<_t2>(b),            \
-                       std::forward<_t3>(c));                                 \
-}
-#define DECL_THUNK6(ret, C, Name, cv, T1, T2, T3, T4, T5, T6)                 \
-ret C::Name(T1 a, T2 b, T3 c, T4 d, T5 e, T6 f) cv                            \
-{                                                                             \
-    using _t1 = T1; using _t2 = T2; using _t3 = T3;                           \
-    using _t4 = T4; using _t5 = T5; using _t6 = T6;                           \
-    return pImpl->Name(std::forward<_t1>(a), std::forward<_t2>(b),            \
-                       std::forward<_t3>(c), std::forward<_t4>(d),            \
-                       std::forward<_t5>(e), std::forward<_t6>(f));           \
+    return pImpl->Name(std::forward<T1>(a), std::forward<T2>(b),              \
+                       std::forward<T3>(c));                                  \
 }
 
 
 namespace alure {
 
+// Need to use these to avoid extraneous commas in macro parameter lists
+using Vector3Pair = std::pair<Vector3,Vector3>;
+using UInt64NSecPair = std::pair<uint64_t,std::chrono::nanoseconds>;
+using SecondsPair = std::pair<Seconds,Seconds>;
+using ALfloatPair = std::pair<ALfloat,ALfloat>;
+using ALuintPair = std::pair<ALuint,ALuint>;
+using BoolTriple = std::tuple<bool,bool,bool>;
+
+
+template<typename T>
+inline std::future_status GetFutureState(const SharedFuture<T> &future)
+{ return future.wait_for(std::chrono::seconds::zero()); }
+
+// This variant is a poor man's optional
+std::variant<std::monostate,uint64_t> ParseTimeval(StringView strval, double srate) noexcept;
+
 template<size_t N>
 struct Bitfield {
 private:
-    std::array<uint8_t,(N+7)/8> mElems;
+    Array<uint8_t,(N+7)/8> mElems;
 
 public:
-    bool operator[](size_t i) const { return mElems[i/8] & (1<<(i%8)); }
+    Bitfield() { std::fill(mElems.begin(), mElems.end(), 0); }
 
-    void clear() { std::fill(mElems.begin(), mElems.end(), 0); }
-    void set(size_t i) { mElems[i/8] |= 1<<(i%8); }
+    bool operator[](size_t i) const noexcept
+    { return static_cast<bool>(mElems[i/8] & (1<<(i%8))); }
+
+    void set(size_t i) noexcept { mElems[i/8] |= 1<<(i%8); }
 };
 
 
@@ -107,6 +122,13 @@ inline std::system_error al_error(int code, T&& what)
 { return std::system_error(code, al_category::sSingleton, std::forward<T>(what)); }
 inline std::system_error al_error(int code)
 { return std::system_error(code, al_category::sSingleton); }
+
+inline void throw_al_error(const char *str)
+{
+    ALenum err = alGetError();
+    if(UNLIKELY(err != AL_NO_ERROR))
+        throw al_error(err, str);
+}
 
 } // namespace alure
 

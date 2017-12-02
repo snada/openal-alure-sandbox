@@ -1,8 +1,9 @@
 
 #include "vorbisfile.hpp"
 
-#include <stdexcept>
 #include <iostream>
+
+#include "context.h"
 
 #include "vorbis/vorbisfile.h"
 
@@ -53,28 +54,32 @@ class VorbisFileDecoder final : public Decoder {
     UniquePtr<std::istream> mFile;
 
     UniquePtr<OggVorbis_File> mOggFile;
-    vorbis_info *mVorbisInfo;
-    int mOggBitstream;
+    vorbis_info *mVorbisInfo{nullptr};
+    int mOggBitstream{0};
 
-    ChannelConfig mChannelConfig;
+    ChannelConfig mChannelConfig{ChannelConfig::Mono};
+
+    std::pair<uint64_t,uint64_t> mLoopPoints{0, 0};
 
 public:
-    VorbisFileDecoder(UniquePtr<std::istream> file, UniquePtr<OggVorbis_File> oggfile, vorbis_info *vorbisinfo, ChannelConfig sconfig)
+    VorbisFileDecoder(UniquePtr<std::istream> file, UniquePtr<OggVorbis_File> oggfile,
+                      vorbis_info *vorbisinfo, ChannelConfig sconfig,
+                      std::pair<uint64_t,uint64_t> loop_points) noexcept
       : mFile(std::move(file)), mOggFile(std::move(oggfile)), mVorbisInfo(vorbisinfo)
-      , mOggBitstream(0), mChannelConfig(sconfig)
+      , mChannelConfig(sconfig), mLoopPoints(loop_points)
     { }
     ~VorbisFileDecoder() override;
 
-    ALuint getFrequency() const override;
-    ChannelConfig getChannelConfig() const override;
-    SampleType getSampleType() const override;
+    ALuint getFrequency() const noexcept override;
+    ChannelConfig getChannelConfig() const noexcept override;
+    SampleType getSampleType() const noexcept override;
 
-    uint64_t getLength() const override;
-    bool seek(uint64_t pos) override;
+    uint64_t getLength() const noexcept override;
+    bool seek(uint64_t pos) noexcept override;
 
-    std::pair<uint64_t,uint64_t> getLoopPoints() const override;
+    std::pair<uint64_t,uint64_t> getLoopPoints() const noexcept override;
 
-    ALuint read(ALvoid *ptr, ALuint count) override;
+    ALuint read(ALvoid *ptr, ALuint count) noexcept override;
 };
 
 VorbisFileDecoder::~VorbisFileDecoder()
@@ -83,39 +88,39 @@ VorbisFileDecoder::~VorbisFileDecoder()
 }
 
 
-ALuint VorbisFileDecoder::getFrequency() const
+ALuint VorbisFileDecoder::getFrequency() const noexcept
 {
     return mVorbisInfo->rate;
 }
 
-ChannelConfig VorbisFileDecoder::getChannelConfig() const
+ChannelConfig VorbisFileDecoder::getChannelConfig() const noexcept
 {
     return mChannelConfig;
 }
 
-SampleType VorbisFileDecoder::getSampleType() const
+SampleType VorbisFileDecoder::getSampleType() const noexcept
 {
     return SampleType::Int16;
 }
 
 
-uint64_t VorbisFileDecoder::getLength() const
+uint64_t VorbisFileDecoder::getLength() const noexcept
 {
     ogg_int64_t len = ov_pcm_total(mOggFile.get(), -1);
     return std::max<ogg_int64_t>(len, 0);
 }
 
-bool VorbisFileDecoder::seek(uint64_t pos)
+bool VorbisFileDecoder::seek(uint64_t pos) noexcept
 {
     return ov_pcm_seek(mOggFile.get(), pos) == 0;
 }
 
-std::pair<uint64_t,uint64_t> VorbisFileDecoder::getLoopPoints() const
+std::pair<uint64_t,uint64_t> VorbisFileDecoder::getLoopPoints() const noexcept
 {
-    return std::make_pair(0, 0);
+    return mLoopPoints;
 }
 
-ALuint VorbisFileDecoder::read(ALvoid *ptr, ALuint count)
+ALuint VorbisFileDecoder::read(ALvoid *ptr, ALuint count) noexcept
 {
     ALuint total = 0;
     ALshort *samples = (ALshort*)ptr;
@@ -182,7 +187,7 @@ ALuint VorbisFileDecoder::read(ALvoid *ptr, ALuint count)
 }
 
 
-SharedPtr<Decoder> VorbisFileDecoderFactory::createDecoder(UniquePtr<std::istream> &file)
+SharedPtr<Decoder> VorbisFileDecoderFactory::createDecoder(UniquePtr<std::istream> &file) noexcept
 {
     static const ov_callbacks streamIO = {
         read, seek, close, tell
@@ -198,6 +203,46 @@ SharedPtr<Decoder> VorbisFileDecoderFactory::createDecoder(UniquePtr<std::istrea
     {
         ov_clear(oggfile.get());
         return nullptr;
+    }
+
+    std::pair<uint64_t,uint64_t> loop_points = { 0, std::numeric_limits<uint64_t>::max() };
+    if(vorbis_comment *vc = ov_comment(oggfile.get(), -1))
+    {
+        for(int i = 0;i < vc->comments;i++)
+        {
+            auto seppos = StringView(
+                vc->user_comments[i], vc->comment_lengths[i]
+            ).find_first_of('=');
+            if(seppos == StringView::npos) continue;
+
+            StringView key(vc->user_comments[i], seppos);
+            StringView val(vc->user_comments[i]+seppos+1, vc->comment_lengths[i]-(seppos+1));
+
+            // RPG Maker seems to recognize LOOPSTART and LOOPLENGTH for loop
+            // points in a Vorbis comment. ZDoom recognizes LOOP_START and
+            // LOOP_END. We can recognize both.
+            if(key == "LOOP_START" || key == "LOOPSTART")
+            {
+                auto pt = ParseTimeval(val, vorbisinfo->rate);
+                if(pt.index() == 1) loop_points.first = std::get<1>(pt);
+                continue;
+            }
+
+            if(key == "LOOP_END")
+            {
+                auto pt = ParseTimeval(val, vorbisinfo->rate);
+                if(pt.index() == 1) loop_points.second = std::get<1>(pt);
+                continue;
+            }
+
+            if(key == "LOOPLENGTH")
+            {
+                auto pt = ParseTimeval(val, vorbisinfo->rate);
+                if(pt.index() == 1)
+                    loop_points.second = loop_points.first + std::get<1>(pt);
+                continue;
+            }
+        }
     }
 
     ChannelConfig channels = ChannelConfig::Mono;
@@ -220,7 +265,7 @@ SharedPtr<Decoder> VorbisFileDecoderFactory::createDecoder(UniquePtr<std::istrea
     }
 
     return MakeShared<VorbisFileDecoder>(
-        std::move(file), std::move(oggfile), vorbisinfo, channels
+        std::move(file), std::move(oggfile), vorbisinfo, channels, loop_points
     );
 }
 
