@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <iostream>
-#include <sstream>
 #include <iomanip>
 #include <cstring>
 #include <thread>
@@ -15,7 +14,7 @@
 
 int main(int argc, char *argv[])
 {
-    alure::DeviceManager devMgr = alure::DeviceManager::get();
+    alure::DeviceManager devMgr = alure::DeviceManager::getInstance();
 
     int fileidx = 1;
     alure::Device dev;
@@ -102,12 +101,12 @@ int main(int argc, char *argv[])
 
         float initialPos = -10;
         float xPos = 0;
-        source.setVelocity(0.1, 0, 0);
+        source.setVelocity(alure::Vector3(0.1, 0, 0));
 
         float invfreq = 1.0f / decoder->getFrequency();
         while(source.isPlaying())
         {
-            source.setPosition(initialPos + xPos, 0, 0);
+            source.setPosition(alure::Vector3(initialPos + xPos, 0, 0));
             xPos += 0.1;
 
             std::cout<< "\r "<<std::fixed<<std::setprecision(2)<<
