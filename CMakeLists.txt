@@ -36,6 +36,18 @@ ExternalProject_Add(
   INSTALL_COMMAND ""
 )
 
+IF(WIN32)
+  ADD_CUSTOM_COMMAND(TARGET OpenAL POST_BUILD        # Adds a post-build event to MyTest
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different  # which executes "cmake - E copy_if_different..."
+          "${OPENAL_BINARY_DIR}/Debug/OpenAL32.dll"      # <--this is in-file
+          "${PROJECT_BINARY_DIR}/Debug")                 # <--this is out-file path
+
+  ADD_CUSTOM_COMMAND(TARGET alure POST_BUILD        # Adds a post-build event to MyTest
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different  # which executes "cmake - E copy_if_different..."
+          "${ALURE_BINARY_DIR}/Debug/alure2.dll"      # <--this is in-file
+          "${PROJECT_BINARY_DIR}/Debug")                 # <--this is out-file path
+ENDIF()
+
 INCLUDE_DIRECTORIES(
   "${PROJECT_SOURCE_DIR}/dist/openal-soft-1.18.2/include"
   "${PROJECT_SOURCE_DIR}/dist/alure/include"
