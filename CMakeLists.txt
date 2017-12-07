@@ -1,14 +1,9 @@
-
-MESSAGE(STATUS "${PROJECT_BINARY_DIR}")
-
-INCLUDE(ExternalProject)
-
 CMAKE_MINIMUM_REQUIRED(VERSION 3.0)
+INCLUDE(ExternalProject)
 
 PROJECT(Base)
 
 SET(CMAKE_BUILD_TYPE Release)
-
 SET(CMAKE_CXX_STANDARD 11)
 
 SET(OPENAL_BINARY_DIR "${PROJECT_BINARY_DIR}/openal")
@@ -37,15 +32,17 @@ ExternalProject_Add(
 )
 
 IF(WIN32)
-  ADD_CUSTOM_COMMAND(TARGET OpenAL POST_BUILD        # Adds a post-build event to MyTest
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different  # which executes "cmake - E copy_if_different..."
-          "${OPENAL_BINARY_DIR}/Debug/OpenAL32.dll"      # <--this is in-file
-          "${PROJECT_BINARY_DIR}/Debug")                 # <--this is out-file path
-
-  ADD_CUSTOM_COMMAND(TARGET alure POST_BUILD        # Adds a post-build event to MyTest
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different  # which executes "cmake - E copy_if_different..."
-          "${ALURE_BINARY_DIR}/Debug/alure2.dll"      # <--this is in-file
-          "${PROJECT_BINARY_DIR}/Debug")                 # <--this is out-file path
+  ADD_CUSTOM_COMMAND(TARGET OpenAL POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${OPENAL_BINARY_DIR}/Debug/OpenAL32.dll"
+      "${PROJECT_BINARY_DIR}/Debug")
+  ADD_CUSTOM_COMMAND(TARGET alure POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${ALURE_BINARY_DIR}/Debug/alure2.dll"
+      "${PROJECT_BINARY_DIR}/Debug")
+  SET(MHR_COPY_DIR "${PROJECT_BINARY_DIR}/Debug")
+ELSE()
+  SET(MHR_COPY_DIR "${PROJECT_BINARY_DIR}")
 ENDIF()
 
 INCLUDE_DIRECTORIES(
@@ -55,6 +52,16 @@ INCLUDE_DIRECTORIES(
 
 ADD_EXECUTABLE(main main.cpp)
 ADD_DEPENDENCIES(main OpenAL alure)
+
+ADD_CUSTOM_COMMAND(TARGET main POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/dist/openal-soft-1.18.2/hrtf/default-44100.mhr"
+    "${MHR_COPY_DIR}")
+
+ADD_CUSTOM_COMMAND(TARGET main POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/dist/openal-soft-1.18.2/hrtf/default-48000.mhr"
+    "${MHR_COPY_DIR}")
 
 IF(WIN32)
   TARGET_LINK_LIBRARIES(main OpenAL32.lib alure2)

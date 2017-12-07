@@ -1,8 +1,22 @@
-# OpenAL Soft and Alure
+# OpenAL Soft and Alure Sandbox
 
-Base project to compile a C++ program with OpenAL-Soft and Alure support.
+Basic project template providing a full cross-platform local environment to develop audio applications with [OpenAL-Soft](http://kcat.strangesoft.net/openal.html) and [Alure](http://kcat.strangesoft.net/alure.html) by Chris "kcat" Robinson.
+
+This work in progress project aims to quickly resolve the building issues on different platforms, providing easy access to awesome features like HRTF.
+
+To achieve this, this project will be updated together with alure version 2 development, to expose all those features (like hrtf) not readily available on the 1.2 release.
+
+This environment will:
+
+- Compile a local build of the two libraries
+- Link your executable against this local version
+- Copy hrtf file definitions into the executable directory
+
+This environment will produce a binary file only runnable within your machine (at least on Mac and Linux, as Windows will automatically search for shared libs on the exe directory). If you ever want to distribute your app, either install the dependencies on your system and package accordingly, or
 
 ## Build
+
+Clone this project, then:
 
  `mkdir build`
 
@@ -10,32 +24,22 @@ Base project to compile a C++ program with OpenAL-Soft and Alure support.
 
  `cmake ..`
 
- `make`
+ `cmake --build .`
+
+ This project expects you to use Visual Studio as build generator on Windows.
 
 ## Run
 
-On Linux it should run on the fly: if your default device is OSS, then you should also install alsa-oss package to have it compatible.
+You will find your compiled binary inside your build directory.
 
-The run:
+### Linux problems opening default device
 
-`aoss ./main -hrtf default-48000 /path/to/file.wav`
-
-On MacOS, it should run (if I ever manage to have hrtf libs found on the system...!)
-
-### Windows
-
-Remember to place you .mhr files in here:
-
-`%appdata%\openal\hrtf`
-
-### Ubuntu and MacOS
-
-They should go in these directories:
+If you run the executable and you get an error like:
 
 ```
-$XDG_DATA_HOME/openal/hrtf  (defaults to $HOME/.local/share/openal/hrtf)
-$XDG_DATA_DIRS/openal/hrtf  (defaults to /usr/local/share/openal/hrtf and
-                             /usr/share/openal/hrtf)
+Could not open /dev/dsp
 ```
 
-The above directories are checked in order for .mhr file presence
+Try installing `alsa-oss` package and run your example like this:
+
+`aoss ./main /path/to/file.wav
