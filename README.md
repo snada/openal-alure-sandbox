@@ -12,7 +12,7 @@ This environment will:
 - Link your executable against this local version
 - Copy hrtf file definitions into the executable directory
 
-This environment will produce a binary file only runnable within your machine (at least on Mac and Linux, as Windows will automatically search for shared libs on the exe directory). If you ever want to distribute your app, either install the dependencies on your system and package accordingly, or
+This environment will produce a binary file only runnable within your machine (at least on Mac and Linux, as Windows will automatically search for shared libs on the exe directory). If you ever want to distribute your app, either install the dependencies on your system and package accordingly, or find your way to build a relocatable package via RPATH.
 
 ## Build
 
